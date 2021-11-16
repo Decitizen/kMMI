@@ -1,12 +1,6 @@
 import numpy as np
 import networkx as nx
 from numba import *
-from numba.typed import Dict
-from time import time, process_time
-from datetime import timedelta as td
-from itertools import chain
-
-flatten = lambda x : list(chain.from_iterable(x))
 
 def init_solution_weighted_degree_ranking(A: np.array, k: int, beta_ratio: float=0.25):
     """Construct a k sized subgraph based on the degree rank order heuristic.

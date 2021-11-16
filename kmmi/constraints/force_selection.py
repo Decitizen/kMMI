@@ -1,5 +1,6 @@
 import numpy as np
 from numba import *
+from numba.typed import Dict
 
 @njit
 def to_dependency_network(U: np.array, force_select: np.array):
