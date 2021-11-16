@@ -48,7 +48,7 @@ def prune_by_edge_weight(E: np.array, threshold: float=1e-3):
     Et = np.zeros((n,n)) 
     for i in range(n):
         for j in range(n):
-            if Et[i,j] < threshold:
+            if E[i,j] < threshold:
                 Et[i,j] = 0.0
             else:
                 Et[i,j] = E[i,j]
