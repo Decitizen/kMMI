@@ -1,25 +1,6 @@
-# Utility functions
 import numpy as np
 from numba import *
 import networkx as nx
-
-flatten = lambda x : list(chain.from_iterable(x))
-overlap_coefficient = lambda A,B: len(A & B) / np.min([len(A),len(B)])
-
-@njit
-def prune_by_edge_weight(E: np.array, threshold: float=1e-3):
-    """
-    Prune edges for which weight is below given threshold value. 
-    """
-    n = E.shape[0]
-    Et = np.zeros((n,n)) 
-    for i in range(n):
-        for j in range(n):
-            if Et[i,j] < threshold:
-                Et[i,j] = 0.0
-            else:
-                Et[i,j] = E[i,j]
-    return Et
 
 @njit
 def compute_btw_exposure_matrix(A: np.array, a: float, l1: float=None):

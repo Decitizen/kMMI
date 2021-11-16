@@ -1,4 +1,5 @@
 import numpy as np
+from numba import njit
 
 class Error(Exception):
     """Base class for other exceptions"""
@@ -34,3 +35,21 @@ def to_numpy_array(U: list) -> np.array:
 def to_symmetric_matrix(E: np.array) -> np.array:
     E_hat = np.tril(E, k=-1) + np.tril(E.T, k=-1)
     return E_hat + E_hat.T
+
+flatten = lambda x : list(chain.from_iterable(x))
+overlap_coefficient = lambda A,B: len(A & B) / np.min([len(A),len(B)])
+
+@njit
+def prune_by_edge_weight(E: np.array, threshold: float=1e-3):
+    """
+    Prune edges for which weight is below given threshold value. 
+    """
+    n = E.shape[0]
+    Et = np.zeros((n,n)) 
+    for i in range(n):
+        for j in range(n):
+            if Et[i,j] < threshold:
+                Et[i,j] = 0.0
+            else:
+                Et[i,j] = E[i,j]
+    return Et
