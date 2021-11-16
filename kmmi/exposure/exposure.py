@@ -21,13 +21,15 @@ def compute_btw_exposure_matrix(A: np.array, a: float, l1: float=None):
     return E
 
 @njit
-def compute_nbtw_exposure_matrix(A: np.array, a: float, weighted=True, lc1: float=None):
+def compute_nbtw_exposure_matrix(A: np.array, a: float, 
+                                 weighted=True, lc1: float=None):
     """Compute NBTW exposure matrix
        A (numpy array): adjacency matrix
        a (float): alpha coefficient
-       weighted (bool): is A weighted (if True, lc1 is ignored since limit of convergence is not known)
-       lc1 (float): spectral radius of matrix C, can be calculated by get_spectral_radius_C.
-                    If no directed cycles, use None.
+       weighted (bool): is A weighted (if True, lc1 is ignored since 
+                        limit of convergence is not known)
+       lc1 (float): spectral radius of matrix C, can be calculated by
+                    get_spectral_radius_C. If no directed cycles, use None.
                     Ignored when weighted == True
     """
     assert A.shape[0] == A.shape[1], 'Matrix is not symmetric'
@@ -121,38 +123,53 @@ def get_spectral_radius_C(A: np.array, iters=10, seed=None):
     
     return np.abs(l)
 
-def binary_search_spectral_radius(katz_l1, A, weighted=True, verbose=False, n_iters=None):
+def binary_search_spectral_radius(katz_l1, A, weighted=True, verbose=False, max_iters=20, tol=1e-5):
     """Compute approximate spectral radius for the weighted directed nbtw 
     adjacency matrix C. This implementation uses binary search to search 
-    for the limit where the C diverges.
+    for the limit where the C diverges. 
     """
-    if n_iters is None:
-        n_iters = int(np.log10(A.shape[0])**-1 * 30) 
-    alpha_max = alpha = katz_l1**-1
     # Search for the upper bound for the search range
+    alpha_max = alpha = katz_l1**-1
     while True:
         try:
-            Ed = compute_nbtw_exposure_matrix(A, alpha, weighted=weighted)
-            if verbose: print(':: alpha {:.4f} converged successfully'.format(alpha_max))
+            _ = compute_nbtw_exposure_matrix(A, alpha, weighted=weighted)
+            if verbose: 
+                print(':: alpha: {:.4f} (eigenvalue = {:.4f})' \
+                      ' converged successfully'.format(alpha_max,alpha_max**-1))
             alpha_max = alpha
             alpha *= 2
         except Exception as e:
-            if verbose: print(':: Initial upper bound for the search range found: {:.4f}'.format(alpha))
-            if verbose: print(':: Radius of convergence is between: [{:.4f},{:.4f}]'.format(alpha**-1, alpha_max**-1))
+            if verbose: 
+                print(':: Initial upper bound for the search range found: {:.4f}'.format(alpha))
+                print(':: Initial bounds: [{:.4f},{:.4f}]'.format(alpha**-1, alpha_max**-1))
             break
     L = alpha_max
     R = alpha_max * 2
     # Binary search
-    for i in range(n_iters):
+    i = 0
+    d0 = [L,R]
+    d1 = np.inf
+    while d1 / katz_l1 > tol:
         m = (L + R) / 2
         try:
-            Ed = compute_nbtw_exposure_matrix(A, m, weighted=weighted)
-            if verbose: print(':: alpha {:.4f} converged successfully'.format(m))
+            _ = compute_nbtw_exposure_matrix(A, m, weighted=weighted)
+            d1 = m - d0[0]
+            d0[0] = m
             alpha_max = L = m
-        except:                    
-            R = m
+        except:
+            d1 = d0[1] - m
+            d0[1] = m
+            alpha_min = R = m
             if verbose: print(':: {:.4f} not valid upper bound'.format(m))
-            if verbose: print(':: Radius of convergence is between: [{:.4f},{:.4f}]'.format(m**-1, (alpha_max)**-1))
+        i += 1
+        if verbose: 
+            print(':: ITERATION {}: alpha: {:.4f} (eigenvalue = {:.4f}) converged'.format(i, m, m**-1))
+            print(':: Updated bounds: [{:.4f},{:.4f}]'.format(alpha_min**-1, alpha_max**-1))
+        if i > max_iters:
+            print(':: WARNING! Binary search didn\'t converge within {} iterations.'.format(max_iters))
+            break
+        else:
+            if verbose: print(':: Convergence successful, largest eigenvalue: {:.4f}'.format(L**-1))
     return L**-1
 
 def to_exposure_matrix(G: nx.DiGraph, f: float, w_threshold = 0.001, nbtw=True, verbose=False):
