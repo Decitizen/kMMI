@@ -4,6 +4,7 @@ from numba import njit
 from itertools import chain
 
 from kmmi.enumeration.graphlet_enumeration import *
+from kmmi.utils.utils import to_numpy_array
 
 overlap_coefficient = lambda A,B: len(A & B) / np.min([len(A),len(B)])
 
