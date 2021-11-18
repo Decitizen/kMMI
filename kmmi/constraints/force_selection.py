@@ -1,6 +1,7 @@
 import numpy as np
 from numba import *
 from numba.typed import Dict
+from time import process_time
 
 @njit
 def to_dependency_network(U: np.array, force_select: np.array):
@@ -23,7 +24,7 @@ def to_dependency_network(U: np.array, force_select: np.array):
         fs_idsn_rev[v] = k
 
     for i, Si in enumerate(U):
-        fs_Si = set(fs) & set(Si)
+        fs_Si = set(force_select) & set(Si)
         if len(fs_Si) > 0:
             for u in fs_Si:
                 fs_map[i,fs_idsn[u]] = 1
