@@ -85,7 +85,8 @@ def select_nrank(U: np.array, A: np.array, p: int, presorted=False, verbose=Fals
         idxs = np.argsort(taus)[::-1]
         U = U[idxs]
     
-    if verbose: print(f':: Selecting {p} graphlets per node...')
+    if verbose: print(':: Selecting', p, ' graphlets per node...')
+    n_v = A.shape[0]
     n = U.shape[0]
     k = U.shape[1]
     u_sel = np.array([False]*n)
