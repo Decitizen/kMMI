@@ -24,3 +24,6 @@ from kmmi.heuristics import *
 
 from kmmi import applogic
 from kmmi.applogic import *
+
+from kmmi import utils
+from kmmi.utils import *

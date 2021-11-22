@@ -32,6 +32,11 @@ def to_numpy_array(U: list) -> np.array:
         
     return Uc
 
+@njit
+def mean_ndiag(B):
+    n = B.shape[0]
+    return (B.sum()-np.diag(B).sum())/(n*(n-1))
+
 def to_symmetric_matrix(E: np.array) -> np.array:
     E_hat = np.tril(E, k=-1) + np.tril(E.T, k=-1)
     return E_hat + E_hat.T
