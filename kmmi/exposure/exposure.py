@@ -1,6 +1,7 @@
 import numpy as np
 from numba import *
 import networkx as nx
+from kmmi.utils.utils import prune_by_edge_weight
 
 @njit
 def compute_btw_exposure_matrix(A: np.array, a: float, l1: float=None):
