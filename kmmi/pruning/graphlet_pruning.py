@@ -2,11 +2,14 @@ import numpy as np
 import networkx as nx
 from numba import njit
 from itertools import chain
+from time import process_time
+from datetime import timedelta
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import connected_components
 
 from kmmi.enumeration.graphlet_enumeration import *
-from kmmi.utils.utils import to_numpy_array
-
-overlap_coefficient = lambda A,B: len(A & B) / np.min([len(A),len(B)])
+from kmmi.utils.utils import to_numpy_array, mean_ndiag, overlap_coefficient
+from kmmi.utils.autoload import *
 
 class Error(Exception):
     """Base class for other exceptions"""
@@ -24,11 +27,11 @@ class SeedNodeError(Error):
                        'neighborhood or remove v from force-selected nodes.'
         super().__init__(self.message)
 
-def prune_by_density(A: np.array, U: np.array, ds: np.array=None, 
-                     delta_min: float=0.7, delta_max: float=1.00): 
+def prune_by_density(U: np.array, A: np.array, ds: np.array=None, 
+                     delta_min: float=0.7, delta_max: float=1.00) -> np.array: 
     """Prune all subgraphs Gs s.t. delta_min <= density(Gs) <= delta_max"""
     if ds is None:
-        taus, ds = graphlet_scores(U, A)
+        _, ds = graphlet_scores(U, A)
     d_sel = (delta_min <= ds) & (ds <= delta_max) 
     d_unsel = (delta_min > ds) | (ds > delta_max)    
     assert d_sel.sum() > 0,  "All graphlets were pruned; " \
@@ -37,140 +40,25 @@ def prune_by_density(A: np.array, U: np.array, ds: np.array=None,
                              "to relax the requirement."
     return U[d_sel,:], U[d_unsel, :]
 
-def prune_subgraphs(U: np.array, k_min: int, k_max: int):
-    """For two node sets V1 and V2, if V1 is subgraph V2, prune V1. Guaranteed to find all V2. 
-    Allows not pruning subgraphs that include node ids defined by parameter select_ids.
-    
-    Returns:
-    Vs_hat_pruned (list): list containing remaining candidate graphlets as lists of node ids
-    pruned (list): list containing pruned candidate graphlets as lists of node ids
-    
-    Note: In practice running time is quasi-linear.
+def strongly_connected(A: np.array, U: np.array):
+    """Select all graphlets s in S which fulfill the definition of strongly 
+    connected component in a directed network, namely that for each pair of 
+    nodes u,v \in S there needs to exist at least one path for which u is 
+    reachable from node v and vice versa.
     """
-    n = U.shape[0]
-    found = False
-    u_sel = set()
-    u_unsel = set()
-    # Init dict with length classes for the node sets
-    lens = {i:[] for i in range(k_min, k_max+1)}
-    for i in range(n):
-        Ui = U[i,:]
-        u = Ui[Ui >= 0]
-        lens[len(u)].append((i,frozenset(u)))
+    SCC = lambda B: connected_components(B, directed=True, 
+                        connection='strong')[1].sum() == 0
+    idxs = np.apply_along_axis(lambda s: SCC(A[s,:][:,s]), 1, U)        
+    return U[idxs,:]
 
-    # Start from shortest graphlets
-    for li in range(k_min, k_max+1):
-        for i,u_i in lens[li]:
-            # Compare against other sets of graphlet lengths start 
-            # from the longest, break if found, decrease l
-            for lj in range(li+1,k_max+1)[::-1]:
-                for j,u_j in lens[lj]:
-                    # Stop criteria
-                    if u_i.issubset(u_j):
-                        u_unsel.add(i)
-                        u_sel.add(j)
-                        # Set stop flag
-                        found = True
-                        break
-            if not found:
-                u_sel.add(i)
-            else:
-                found = False
-                break
-                
-    idxs = list(u_sel)
-    return U[idxs,:], U[list(u_unsel),:]
-
-def select_by_scores(U: np.array, A: np.array, taus_map: dict=None, 
-                     n_sel: int=20000) -> list:
-    """Return n_sel graphlets with highest scoring function values 
-    as a list of lists. 
-    """
-    taus = np.apply_along_axis(lambda x: taus_map[frozenset(x)], 1, U)
-    idxs = np.argsort(taus)[::-1]
-    return U[idxs,:][:n_sel,:], U[idxs,:][n_sel:,:]
-
-def find_pruned_fs_graphlets(U: np.array, S: np.array, fs: list):
-    """Select all graphlets s in S which include any of
-    the force selected nodes K that are not in U."""
-    F = set(fs)
-    F_prime = F - set(U.ravel())
-    idxs = []
-    for i,s in enumerate(S):
-        if len(F_prime & set(s)) > 0:
-            idxs.append(i)
-    return S[idxs,:], F_prime
-
-def prune(G: nx.DiGraph, Vs_hat: list, k_min: int, k_max: int, delta_min: float,
-          delta_max: float, force_select: list=[], n_sel: int=None,
-          remove_small_seeds=True, verbose=False):
-    """Prune candidate graphlets based on density and set inclusivity. Finally, 
-    if n_sel is defined, only n_sel candidates with highest graphlet weight 
-    will be kept.
-    
-    Returns:
-    Vs_hat_pruned (list): list containing remaining candidate graphlets as lists
-    of node ids pruned (list): list containing pruned candidate graphlets as 
-    lists of node ids.
-    
-    Note: In practice running time is quasi-linear.
-    """ 
-    A = nx.to_numpy_array(G, nodelist=G.nodes)
-    node_map = dict(zip(G.nodes(), np.arange(len(G.nodes))))
-    Vs_hat = [[node_map[u] for u in v] for v in Vs_hat]
-    fs = [node_map[u] for u in force_select]
-    U = to_numpy_array(Vs_hat)
-    pruned = []
-        
-    # Compute tau values for graphlets 
-    taus, ds = graphlet_scores(U, A)
-    K = np.apply_along_axis(lambda x: frozenset(x), 1, U)
-    taus_map = {}
-    for i in range(U.shape[0]):
-        taus_map[K[i]] = taus[i]
-    
-    # Prune by density
-    if delta_min != 0.0: 
-        if verbose: print(':: Pruning 1/2: Pruning graphlets by density')
-        U_pruned, pruned_s = prune_by_density(A, U, ds, delta_min, delta_max)
-        pruned.append(pruned_s)
-        if verbose: print(':: * Number of graphlets after ' \
-                          'density pruning: {}\n'.format(U_pruned.shape[0]))
-    # Prune subgrahps
-    if verbose: print(':: Pruning 2/2: Reducing subgraphs to ' \
-                      'their largest supergraph-graphlets')
-    U_pruned, pruned_s = prune_subgraphs(U_pruned, k_min, k_max)
-    pruned.append(pruned_s)
-    if verbose: print(':: * Number of graphlets after subgraph ' \
-                      'pruning: {}\n'.format(U_pruned.shape[0]))
-    if n_sel is not None:
-        U_pruned, pruned_s = select_by_scores(U_pruned, A, taus_map, n_sel)
-        pruned.append(pruned_s)
-        if verbose: print(':: * Number of graphlets after weight ' \
-                          'selection: {}\n'.format(U_pruned.shape[0]))
-    if len(fs) > 0:
-        pruned = np.concatenate(pruned)
-        pruned, not_included = find_pruned_fs_graphlets(U_pruned, pruned, fs)
-        if len(pruned) > 0:
-            n0 = U_pruned.shape[0]
-            U_pruned = restore_pruned_graphlets(A, U_pruned, taus_map, pruned,
-                                                not_included, fs, k_min, k_max, 
-                                                remove_small_seeds=remove_small_seeds, 
-                                                verbose=True)
-            if verbose:
-                print(':: Augmentation ready. Successfully restored ' \
-                      '{} graphlets'.format(U_pruned.shape[0] - n0))
-    return U_pruned
-
+@njit
 def graphlet_scores(U: np.array, A: np.array):
-    """Compute graphlet scores for graphlets in U. 
-    
-    Graphlet scoring function is defined as \tau = ((s_rw + s_rho) / 2, 
-    where s_rw is the normalized ranking order based on average edge 
-    weight $$ \sum_{i,j in V_s} A_{ij} / n_e $$ such that A is the 
-    weighted adjacency matrix of the subgraph G_s induced by the set 
-    of nodes $s = \{u_1,u_2,...,u_n}$, and n_e is the number of 
-    edges with non-zero weight in the induced subgraph G_s.
+    """Compute graphlet scores for graphlets in U. Graphlet scoring
+    function is defined as such that, i!=j and
+    $$\tau = \frac{1}{(n*(n-1))} \sum_{i,j \in s} A_{ij}$$
+    where A is the weighted adjacency matrix of the subgraph G_s 
+    induced by the set of nodes $s = \{u_1,u_2,...,u_n}$, and n is 
+    the number of edges  in the induced subgraph G_s.
     """
     n = U.shape[0]
     ws = np.zeros(n)
@@ -180,99 +68,186 @@ def graphlet_scores(U: np.array, A: np.array):
         s = Ui[Ui >= 0]
         n_s = len(s)
         B = A[s,:][:,s]
-        n_e = (B > 0.0).sum()
-        ws[i] = B.sum() / n_e
-        ds[i] = n_e / (n_s*(n_s-1))
-    
-    rank = (np.arange(n)+1) / n
-    idxs = np.argsort(ws)
-    taus = (rank[idxs] + ds[idxs]) / 2
-    C = np.column_stack((idxs,taus))
-    C = C[C[:,0].argsort()]
-    return C[:,1], ds
-
-def select_by_weight(graphlets: list, A: np.array, 
-                     node_map: dict, n_sel: int=20000) -> list:
-    """Return n_sel graphlets with highest weight as a list of lists. 
-    Graphlet weight is defined as element-wise sum of the adjacency 
-    matrix A: $$ \sum_{i,j in V_s} A_{ij} $$ where A is the weighted 
-    adjacency matrix of the subgraph induced by the set of nodes 
-    $u \in s$ and where $s$ is the graphlet.
-    """
-    s_ws = []
-    for s in graphlets:
-        s_prime = [node_map[u] for u in s]
-        s_w = A[s_prime,:][:,s_prime].sum()
-        s_ws.append(s_w)
+        ws[i] = mean_ndiag(B)
+        ds[i] = (B > 0.0).sum() / (n_s*(n_s-1))
         
-    scores, graphlets = zip(*sorted(zip(s_ws,graphlets))[::-1])
-    return list(graphlets[:n_sel]), list(graphlets[n_sel:])
+    return ws, ds
 
-def sort_and_restore(Cv, n_restore, overlap_threshold, verbose=False):
-    sorted_taus = sorted(list(Cv), reverse=True)
-    print(sorted_taus)
-    restored = [sorted_taus[0][1]]
-    restored_taus = [sorted_taus[0][0]]
-    for tau, u in sorted_taus:
-        if np.all([overlap_coefficient(u, v) < overlap_threshold 
-                   for v in restored]):
-            restored.append(u)
-            restored_taus.append(tau)
-            if len(restored) == n_restore:
-                break
-    return restored, restored_taus
+@njit
+def select_nrank(U: np.array, A: np.array, p: int, presorted=False, verbose=False):
+    """Selects p highest ranking graphlets per each node in the original 
+    network. Assumes that U is already ordered in the ascending ranking order.
+    """
+    if not presorted:
+        if verbose: print(':: Computing tau scores...')
+        taus, _ = graphlet_scores(U, A)
+        if verbose: print(':: Sorting based on tau scores...')
+        idxs = np.argsort(taus)[::-1]
+        U = U[idxs]
+    
+    if verbose: print(f':: Selecting {p} graphlets per node...')
+    n = U.shape[0]
+    k = U.shape[1]
+    u_sel = np.array([False]*n)
+    C = np.zeros(n_v, dtype=np.int16)
+    for i in range(n):
+        for j in range(k):
+            Uidx = U[i,j]
+            if Uidx != -1:
+                if C[Uidx] != p:
+                    C[Uidx] += 1
+                    u_sel[i] = True
+    return U[u_sel,:], u_sel
 
-def restore_pruned_graphlets(A: np.array, U: np.array, taus_map: dict, pruned: list,
-                             not_included: set, select_ids: list, k_min: int, k_max: int, 
-                             n_restore: int=5, overlap_threshold: float=0.35, 
-                             verbose=False, remove_small_seeds=False):
-    """For each node v for which all graphlets were pruned during the pruning phase, restore 
-    number of pruned graphlets where number is defined by n_restore attribute. See compute_tau 
-    method for definition of the selection criteria.
+def binary_search_p(U: np.array, n_v: int, tol: int=1000, n_max: int=10000, verbose=False):
+    """Compute the best value of p parameter for the select_nrank function. Useful when 
+    the number of graphlet candidates is larger than what the resources available for 
+    running the downstream tasks that use the coarse-grained network. This implementation
+    uses binary search to search for the limit such that output < n_max.
+    """
+    n = U.shape[0]
+    n_v = A.shape[0]
+    assert n > n_max, f'n: {n} > n_max: {n_max}, binary search isn\'t required'
+    if n_max > 1e5: print(f'WARNING: n_max: {n_max} is higher than what the ' \
+                          'pipeline has been benchmarked for.')
+
+    if verbose:
+        print(':: Initializing binary search for determining upper bound for p...')
+        print(f':: Tolerance: {tol}')
+    i = n_sel = 1
+    while n_sel < n_max:
+        p = 2**i
+        _, idxs = select_nrank(U, A, p, True, verbose)
+        n_sel = idxs.sum()
+        i += 1
+
+    if verbose: print(f':: Initial upper bound found for the p: {p}')
+    d1 = np.inf
+    S0 = idxs
+    L, R = p/2, p
+    while np.abs(d1) > tol:
+        m = int((L + R) / 2)
+        _, idxs = select_nrank(U, A, p, True, verbose)
+        if idxs.sum() <= n_max:
+            d1 = idxs.sum() - S0.sum()
+            L = m
+            if verbose: print(f':: * {m} ({idxs.sum()}) set as the lower bound')
+        else:
+            d1 = idxs.sum() - S0.sum()
+            S0 = idxs
+            R = m
+            if verbose: print(f':: * {m} ({idxs.sum()}) set as the upper bound')
+    if verbose: print(':: Convergence succesful, final p: {} ({} selected)'
+                      .format(L, S0.sum())) 
+    return L, S0
+
+def prune_subgraphs(U: np.array, k_min: int, k_max: int):
+    """For two node sets V1 and V2, if V1 is subgraph V2, prune V1. Guaranteed to find 
+    all V2. Function allows to not prune those subgraphs which include node ids defined 
+    by parameter select_ids.
     
     Returns:
-    U (np.array):  with restored graphlets, 
-                   list of lists of node ids 
+    Vs_hat_pruned (list): list containing remaining candidate 
+                          graphlets as lists of node ids
+           pruned (list): list containing pruned candidate 
+                          graphlets as lists of node ids
+    Notes:
+    ------
+    Worst-case running time is O(n^2), but on average the running time is quasi-linear
+    as the implementation explores the maximal graphlet candidates starting first from 
+    the longest graphlets. 
     """
-    ## Add back pruned graphlets as necessary
-    print(':: {} colored nodes were pruned.'.format(len(not_included)))
-    restored_all = []
-    # Collect all graphlets based on v's group membership, compute tau
-    if len(pruned) > 0:
+    n = U.shape[0]
+    sel = np.array([True]*n)
+    lens = {i:[] for i in range(k_min, k_max+1)}
+    for i in range(n):
+        Ui = U[i,:]
+        u = frozenset(Ui[Ui >= 0])
+        lens[len(u)].append((i,u))
         
-        C = {v:set() for v in not_included}
-        for v in not_included:
-            for i,u in enumerate(pruned):
-                if v in u:              
-                    u_set = frozenset(u)
-                    C[v].add((taus_map[u_set], u_set))
-                    
-        for v, Cv in C.items():
-            if len(Cv) > 0:
-                restored, r_taus = sort_and_restore(Cv, n_restore, 
-                                                    overlap_threshold, 
-                                                    verbose)
-                for u in restored:
-                    restored_all.append(u)
-                if verbose:
-                    n_r = len(restored)
-                    print(f':: {len(C[v])} graphlets with node {v}, {n_r}' \
-                          ' nodes restored, tau values:', r_taus)
-            else:
-                if remove_small_seeds:
-                    select_ids.remove(v)
-                    if verbose:
-                        print(':: No suitable graphlets found for node {},' \
-                              ' removing node from selection'.format(v))
-                else:
-                    exp_msg = ':: No graphlet candidates of size range '\
-                              '{}-{} for node {}.'.format(k_min, k_max, v)
-                    raise SeedNodeError(exp_msg)
-    else:
-        exp_msg = ':: 0 pruned graphlet candidates found, cannot add ' \
-                  'graphlets for all force-selected nodes.'
-        raise SeedNodeError(exp_msg)
-    
-    U_aug = np.array([list(s) for s in restored_all])
-    return np.concatenate((U, U_aug))
+    for li in range(k_min, k_max+1):
+        for i,u_i in lens[li]:            
+            for lj in range(li+1,k_max+1)[::-1]:
+                for j,u_j in lens[lj]:
+                    if u_i.issubset(u_j):
+                        sel[i] = False
+                        break
+                if not sel[i]:
+                    break
+    return U[sel,:], U[sel == False,:]
 
+def prune(A: np.array, U: np.array, k_min: int, k_max: int, delta_min: float,
+          delta_max: float, force_select: list=[], n_sel: int=None,
+          remove_small_seeds=True, verbose=False, weakly_connected=False):
+    """Prune candidate graphlets using a multi-step pruning pipeline.
+    
+    Steps:
+        1. keep strongly connected graphlets
+        2. keep only graphlets that are maximal sets 
+        3. select up to n_sel top ranking graphlets based on tau scores 
+           with a guarantee that each node will be included in at least 
+           p graphlets
+        
+    Returns:
+    --------
+    Vs_hat_pruned (np.array): array of shape (n, k_max) containing remaining 
+                              candidate graphlets as rows.
+    """ 
+    t0p = process_time()
+    n = U.shape[0]
+    U_pruned = U
+           
+    if not weakly_connected:
+        if verbose: 
+            t0 = process_time()
+            print(':: Pruning 1/3: Selecting strongly connected graphlets')
+        
+        U_pruned = strongly_connected(A, U_pruned)
+        if verbose: 
+            print(':: * Number of graphlets after ' \
+                          'selection: {}'.format(U_pruned.shape[0]))    
+            td = process_time() - t0
+            print(':: (@ {})\n'.format(timedelta(seconds=td)))
+                 
+    # Prune subgrahps
+    if verbose: 
+        t0 = process_time()
+        print(':: Pruning 2/3: Reducing subgraphs to ' \
+                      'their largest supergraph-graphlets')
+    
+    U_pruned, pruned_s = prune_subgraphs(U_pruned, k_min, k_max)
+    
+    if verbose: 
+        print(':: * Number of graphlets after subgraph ' \
+                      'pruning: {}'.format(U_pruned.shape[0]))
+    
+        td = process_time() - t0
+        print(':: (@ {})\n'.format(timedelta(seconds=td)))
+    
+    if n_sel is not None:
+        if n_sel < U_pruned.shape[0]:
+            if verbose:
+                t0 = process_time()
+                print(f':: Pruning 3/3: Selecting {n_sel} top ranking ' \
+                      'graphlets')
+                print(':: Computing tau scores...')
+            
+            taus, _ = graphlet_scores(U_pruned, A)
+            if verbose: print(':: Sorting based on tau scores...')
+            idxs = np.argsort(taus)[::-1]
+            _, u_sel = binary_search_p(U_pruned[idxs,:], A.shape[0], n_max=n_sel, 
+                                       tol=int(n_sel*0.1), verbose=True)
+            U_pruned = U_pruned[u_sel,:]
+            
+            if verbose: 
+                td = process_time() - t0
+                print(':: (@ {})\n'.format(timedelta(seconds=td)))
+                
+                print(':: Pruning ready, {} graphlets selected'
+                      .format(U_pruned.shape[0]))
+                td = process_time() - t0p
+                print(':: Total elapsed time @ {}\n'.format(timedelta(seconds=td)))
+        else:
+            if verbose: print(':: n_sel >= n, skipping ranked selection.')
+                
+    return U_pruned
