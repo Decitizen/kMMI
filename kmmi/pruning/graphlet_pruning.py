@@ -4,8 +4,6 @@ from numba import njit
 from itertools import chain
 from time import process_time
 from datetime import timedelta
-from scipy.sparse import csr_matrix
-from scipy.sparse.csgraph import connected_components
 
 from kmmi.enumeration.graphlet_enumeration import *
 from kmmi.utils.utils import to_numpy_array, mean_ndiag, overlap_coefficient
@@ -38,7 +36,7 @@ def prune_by_density(U: np.array, A: np.array, ds: np.array=None,
                              "selected density range may be too narrow, " \
                              "lower the delta_min or increase the delta_max " \
                              "to relax the requirement."
-    return U[d_sel,:], U[d_unsel, :]
+    return U[d_sel,:]
 
 def strongly_connected(A: np.array, U: np.array):
     """Select all graphlets s in S which fulfill the definition of strongly 
@@ -46,10 +44,9 @@ def strongly_connected(A: np.array, U: np.array):
     nodes u,v \in S there needs to exist at least one path for which u is 
     reachable from node v and vice versa.
     """
-    SCC = lambda B: connected_components(B, directed=True, 
-                        connection='strong')[1].sum() == 0
-    idxs = np.apply_along_axis(lambda s: SCC(A[s,:][:,s]), 1, U)        
-    return U[idxs,:]
+    SCC = lambda s: nx.is_strongly_connected(nx.DiGraph(A[s,:][:,s]))
+    idxs = [SCC(s[s!=-1]) for s in U]
+    return U[idxs, :]
 
 @njit
 def graphlet_scores(U: np.array, A: np.array):
@@ -74,33 +71,53 @@ def graphlet_scores(U: np.array, A: np.array):
     return ws, ds
 
 @njit
-def select_nrank(U: np.array, A: np.array, p: int, presorted=False, verbose=False):
-    """Selects p highest ranking graphlets per each node in the original 
-    network. Assumes that U is already ordered in the ascending ranking order.
+def select_nrank(U: np.array, A: np.array, Vs: np.array, p: int, 
+                 presorted=False, verbose=False):
+    """Selects p highest ranking graphlets per each node in the seed 
+    node set Vs. This method assumes that U is already ordered in 
+    ascending ranking order based on desired ranking criteria.
     """
     if not presorted:
         if verbose: print(':: Computing tau scores...')
         taus, _ = graphlet_scores(U, A)
         if verbose: print(':: Sorting based on tau scores...')
         idxs = np.argsort(taus)[::-1]
-        U = U[idxs]
+        U = U[idxs,:]
     
-    if verbose: print(':: * p:', p, 'graphlets per node...')
-    n_v = A.shape[0]
+    if verbose: print(':: * p:', p, 'graphlets per node')
+    Vss = set(Vs)
+    n_vs = Vs.shape[0]
+    count = 0
     n = U.shape[0]
     k = U.shape[1]
     u_sel = np.array([False]*n)
-    C = np.zeros(n_v, dtype=np.int16)
+    C = np.zeros(n_vs, dtype=np.int16)
+    prcs = set([int(i) for i in (n * (np.arange(1,10) / 10))])
     for i in range(n):
+        if verbose:
+            if i+1 in prcs:
+                prc = np.round((i+1) / n * 100, 1)
+                print(' \t* selection progress: ',i,', (',prc,'%)' \
+                      ', ', count,' selected')
+
         for j in range(k):
             Uidx = U[i,j]
-            if Uidx != -1:
+            if Uidx in Vss:
                 if C[Uidx] != p:
                     C[Uidx] += 1
+                    count += 1
                     u_sel[i] = True
+                    
+                    if verbose:
+                        if count == n_vs*p:
+                            print(':: Selection ' \
+                                  'ready at iteration ',i,'(',prc,'%).')
+                            return U[u_sel,:], u_sel
+    
     return U[u_sel,:], u_sel
 
-def binary_search_p(U: np.array, A: np.array, tol: int=1000, n_max: int=10000, verbose=False):
+def binary_search_p(U: np.array, A: np.array, Vs: np.array, tol: int=1000, 
+                    n_max: int=5000, verbose=False):
     """Compute the best value of p parameter for the select_nrank function. Useful when 
     the number of graphlet candidates is larger than what the resources available for 
     running the downstream tasks that use the coarse-grained network. This implementation
@@ -118,7 +135,7 @@ def binary_search_p(U: np.array, A: np.array, tol: int=1000, n_max: int=10000, v
     i = n_sel = 1
     while n_sel < n_max:
         p = 2**i
-        _, idxs = select_nrank(U, A, p, True, verbose)
+        _, idxs = select_nrank(U, A, Vs, p, True, verbose)
         n_sel = idxs.sum()
         i += 1
 
@@ -128,7 +145,7 @@ def binary_search_p(U: np.array, A: np.array, tol: int=1000, n_max: int=10000, v
     L, R = p/2, p
     while np.abs(d1) > tol:
         m = int((L + R) / 2)
-        _, idxs = select_nrank(U, A, m, True, verbose)
+        _, idxs = select_nrank(U, A, Vs, m, True, verbose)
         if idxs.sum() <= n_max:
             d1 = idxs.sum() - S0.sum()
             S0 = idxs
@@ -145,14 +162,12 @@ def binary_search_p(U: np.array, A: np.array, tol: int=1000, n_max: int=10000, v
 
 def prune_subgraphs(U: np.array, k_min: int, k_max: int):
     """For two node sets V1 and V2, if V1 is subgraph V2, prune V1. Guaranteed to find 
-    all V2. Function allows to not prune those subgraphs which include node ids defined 
-    by parameter select_ids.
+    all V2.
     
     Returns:
-    Vs_hat_pruned (list): list containing remaining candidate 
-                          graphlets as lists of node ids
-           pruned (list): list containing pruned candidate 
-                          graphlets as lists of node ids
+    U (list): list containing remaining candidate 
+              graphlets as lists of node ids
+
     Notes:
     ------
     Worst-case running time is O(n^2), but on average the running time is quasi-linear
@@ -176,11 +191,10 @@ def prune_subgraphs(U: np.array, k_min: int, k_max: int):
                         break
                 if not sel[i]:
                     break
-    return U[sel,:], U[sel == False,:]
+    return U[sel,:]
 
-def prune(A: np.array, U: np.array, k_min: int, k_max: int, delta_min: float,
-          delta_max: float, force_select: list=[], n_sel: int=None,
-          remove_small_seeds=True, verbose=False, weakly_connected=False):
+def prune(A: np.array, U: np.array, Vs: np.array, k_min: int, k_max: int, 
+          n_sel: int=None, verbose=False, weakly_connected=False):
     """Prune candidate graphlets using a multi-step pruning pipeline.
     
     Steps:
@@ -192,7 +206,7 @@ def prune(A: np.array, U: np.array, k_min: int, k_max: int, delta_min: float,
         
     Returns:
     --------
-    Vs_hat_pruned (np.array): array of shape (n, k_max) containing remaining 
+    U (np.array): array of shape (n, k_max) containing remaining 
                               candidate graphlets as rows.
     """ 
     t0p = process_time()
@@ -217,7 +231,7 @@ def prune(A: np.array, U: np.array, k_min: int, k_max: int, delta_min: float,
         print(':: Pruning 2/3: Reducing subgraphs to ' \
                       'their largest supergraph-graphlets')
     
-    U_pruned, pruned_s = prune_subgraphs(U_pruned, k_min, k_max)
+    U_pruned = prune_subgraphs(U_pruned, k_min, k_max)
     
     if verbose: 
         print(':: * Number of graphlets after subgraph ' \
@@ -237,8 +251,8 @@ def prune(A: np.array, U: np.array, k_min: int, k_max: int, delta_min: float,
             taus, _ = graphlet_scores(U_pruned, A)
             if verbose: print(':: Sorting based on tau scores...')
             idxs = np.argsort(taus)[::-1]
-            _, u_sel = binary_search_p(U_pruned[idxs,:], A.shape[0], n_max=n_sel, 
-                                       tol=int(n_sel*0.1), verbose=True)
+            _, u_sel = binary_search_p(U_pruned[idxs,:], A, Vs, n_max=n_sel, 
+                                       tol=int(n_sel*0.1), verbose=verbose)
             U_pruned = U_pruned[u_sel,:]
             
             if verbose: 
