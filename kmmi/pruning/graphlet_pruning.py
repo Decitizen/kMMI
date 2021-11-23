@@ -85,7 +85,7 @@ def select_nrank(U: np.array, A: np.array, p: int, presorted=False, verbose=Fals
         idxs = np.argsort(taus)[::-1]
         U = U[idxs]
     
-    if verbose: print(':: Selecting', p, ' graphlets per node...')
+    if verbose: print(':: * p:', p, 'graphlets per node...')
     n_v = A.shape[0]
     n = U.shape[0]
     k = U.shape[1]
@@ -100,7 +100,7 @@ def select_nrank(U: np.array, A: np.array, p: int, presorted=False, verbose=Fals
                     u_sel[i] = True
     return U[u_sel,:], u_sel
 
-def binary_search_p(U: np.array, n_v: int, tol: int=1000, n_max: int=10000, verbose=False):
+def binary_search_p(U: np.array, A: np.array, tol: int=1000, n_max: int=10000, verbose=False):
     """Compute the best value of p parameter for the select_nrank function. Useful when 
     the number of graphlet candidates is larger than what the resources available for 
     running the downstream tasks that use the coarse-grained network. This implementation
@@ -128,9 +128,10 @@ def binary_search_p(U: np.array, n_v: int, tol: int=1000, n_max: int=10000, verb
     L, R = p/2, p
     while np.abs(d1) > tol:
         m = int((L + R) / 2)
-        _, idxs = select_nrank(U, A, p, True, verbose)
+        _, idxs = select_nrank(U, A, m, True, verbose)
         if idxs.sum() <= n_max:
             d1 = idxs.sum() - S0.sum()
+            S0 = idxs
             L = m
             if verbose: print(f':: * {m} ({idxs.sum()}) set as the lower bound')
         else:
