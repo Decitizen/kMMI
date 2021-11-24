@@ -72,7 +72,7 @@ def graphlet_scores(U: np.array, A: np.array):
     return ws, ds
 
 @njit
-def select_nrank(U: np.array, A: np.array, Vs: np.array, p: int, tol: int=0.01,
+def select_nrank(U: np.array, A: np.array, Vs: np.array, p: int, ptol: int=0.01,
                  presorted=False, strict_mode=True, verbose=False) -> np.array:
     """Selects p highest ranking graphlets per each node in the seed node set 
     Vs. This method assumes that U is already ordered in ascending ranking 
@@ -86,7 +86,7 @@ def select_nrank(U: np.array, A: np.array, Vs: np.array, p: int, tol: int=0.01,
     A : weighted adjacency matrix of the input network
     Vs : set of seed nodes that will be selected for
     p : target number of graphlets to select per each seed node
-    tol : allowed tolerance (fraction of p) when using the non-strict mode
+    ptol : allowed tolerance (fraction of p) when using the non-strict mode
     presorted : set True if U rows are already in an ascending sorted order 
                 from the most to the least optimal.
     strict_mode : controls how strict the selection behavior is, set False 
@@ -144,6 +144,7 @@ def select_nrank(U: np.array, A: np.array, Vs: np.array, p: int, tol: int=0.01,
                         break
         if flag:
             if verbose:
+                prc = np.round((i+1) / n * 100, 1)
                 print(':: Selection ready at iteration ',i,'(',prc,'%).')
                 print(':: Selected ', u_sel.sum(),'graphlets')
             break
@@ -152,20 +153,38 @@ def select_nrank(U: np.array, A: np.array, Vs: np.array, p: int, tol: int=0.01,
         assert_msg = 'Selection not balanced, decrease p'
         assert count == n_vs*p, assert_msg
     else:
-        assert p - np.mean(C[C > 0]) < tol*p, assert_msg
+        assert p - np.mean(C[C > 0]) < ptol*p, assert_msg
     return U[u_sel,:], u_sel, C
 
-def binary_search_p(U: np.array, A: np.array, Vs: np.array, tol: int=1000, 
-                    n_max: int=5000, verbose=False):
+def binary_search_p(U: np.array, A: np.array, Vs: np.array, tol: float=0.1, 
+                    ptol: float=0.01,  n_max: int=5000, verbose=False):
     """Compute the best value of p parameter for the select_nrank function. Useful when 
     the number of graphlet candidates is larger than what the resources available for 
     running the downstream tasks that use the coarse-grained network. This implementation
-    uses binary search to search for the limit such that output < n_max.
+    uses binary search to search for the limit p such that approximately n_max graphlets
+    will be selected (tolerance is defined by tol parameter).
+    
+    Parameters
+    ----------
+    U : input graphlets as rows of an array with shape (n, k_max) where elements 
+        are node indices in the adjacency matrix of the input network. Rows are 
+        padded from the right with -1 for graphlet sizes < k_max
+    A : weighted adjacency matrix of the input network
+    Vs : set of seed nodes that will be selected for
+    tol : tolerance of error for the n_max (fraction of n_max)
+    ptol : tolerance of error for the selection method (fraction of p)
+    
+    Returns
+    -------
+    L (int) : optimal p value
+    U (np.array) : output graphlets, array of shape (n_sel, k_max) containing remaining 
+                   candidate graphlets as rows of node indices in the adjacency matrix
+                   of the input network.
     """
     n = U.shape[0]
     n_v = A.shape[0]
     assert n > n_max, f'n: {n} > n_max: {n_max}, binary search isn\'t required'
-    if n_max > 1e5: print(f'WARNING: n_max: {n_max} is higher than what the ' \
+    if n_max > 2e4: print(f'WARNING: n_max: {n_max} is higher than what the ' \
                           'pipeline has been benchmarked for.')
 
     if verbose:
@@ -174,7 +193,8 @@ def binary_search_p(U: np.array, A: np.array, Vs: np.array, tol: int=1000,
     i = n_sel = 1
     while n_sel < n_max:
         p = 2**i
-        _, idxs = select_nrank(U, A, Vs, p, True, verbose)
+        _, idxs, _ = select_nrank(U, A, Vs, p, verbose=verbose, presorted=True, 
+                                  strict_mode=False, ptol=ptol)
         n_sel = idxs.sum()
         i += 1
 
@@ -182,9 +202,10 @@ def binary_search_p(U: np.array, A: np.array, Vs: np.array, tol: int=1000,
     d1 = np.inf
     S0 = idxs
     L, R = p/2, p
-    while np.abs(d1) > tol:
+    while np.abs(d1) > tol*n_max:
         m = int((L + R) / 2)
-        _, idxs = select_nrank(U, A, Vs, m, True, verbose)
+        _, idxs, _ = select_nrank(U, A, Vs, m, verbose=verbose, presorted=True, 
+                                  strict_mode=False, ptol=ptol)
         if idxs.sum() <= n_max:
             d1 = idxs.sum() - S0.sum()
             S0 = idxs
@@ -196,8 +217,8 @@ def binary_search_p(U: np.array, A: np.array, Vs: np.array, tol: int=1000,
             R = m
             if verbose: print(f':: * {m} ({idxs.sum()}) set as the upper bound')
     if verbose: print(':: Convergence succesful, final p: {} ({} selected)'
-                      .format(L, S0.sum())) 
-    return L, S0
+                      .format(m, S0.sum())) 
+    return m, U[idxs,:]
 
 def prune_subgraphs(U: np.array, k_min: int, k_max: int):
     """For two node sets V1 and V2, if V1 is subgraph V2, prune V1. Guaranteed to find 
@@ -292,9 +313,8 @@ def prune(A: np.array, U: np.array, Vs: np.array, k_min: int, k_max: int,
             taus, _ = graphlet_scores(U_pruned, A)
             if verbose: print(':: Sorting based on tau scores...')
             idxs = np.argsort(taus)[::-1]
-            _, u_sel = binary_search_p(U_pruned[idxs,:], A, Vs, n_max=n_sel, 
+            _, U_pruned = binary_search_p(U_pruned[idxs,:], A, Vs, n_max=n_sel, 
                                        tol=int(n_sel*0.1), verbose=verbose)
-            U_pruned = U_pruned[u_sel,:]
             
             if verbose: 
                 td = process_time() - t0
