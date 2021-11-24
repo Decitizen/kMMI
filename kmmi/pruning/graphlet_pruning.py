@@ -27,6 +27,8 @@ def strongly_connected(A: np.array, U: np.array):
     nodes u,v \in S there needs to exist at least one path for which u is 
     reachable from node v and vice versa.
     
+    Parameters
+    ----------
     ws (np.array): array of shape (U.shape[0]) containing the graphlets' weighted 
                    densities as rows such that indices are in order with corresponding
                    graplets in U.
@@ -70,11 +72,37 @@ def graphlet_scores(U: np.array, A: np.array):
     return ws, ds
 
 @njit
-def select_nrank(U: np.array, A: np.array, Vs: np.array, p: int, 
-                 presorted=False, verbose=False):
-    """Selects p highest ranking graphlets per each node in the seed 
-    node set Vs. This method assumes that U is already ordered in 
-    ascending ranking order based on desired ranking criteria.
+def select_nrank(U: np.array, A: np.array, Vs: np.array, p: int, tol: int=0.01,
+                 presorted=False, strict_mode=True, verbose=False) -> np.array:
+    """Selects p highest ranking graphlets per each node in the seed node set 
+    Vs. This method assumes that U is already ordered in ascending ranking 
+    order based on desired ranking criteria.
+    
+    Parameters
+    ----------
+    U : input graphlets as rows of an array with shape (n, k_max) where elements 
+        are node indices in the adjacency matrix of the input network. Rows are 
+        padded from the right with -1 for graphlet sizes < k_max
+    A : weighted adjacency matrix of the input network
+    Vs : set of seed nodes that will be selected for
+    p : target number of graphlets to select per each seed node
+    tol : allowed tolerance (fraction of p) when using the non-strict mode
+    presorted : set True if U rows are already in an ascending sorted order 
+                from the most to the least optimal.
+    strict_mode : controls how strict the selection behavior is, set False 
+                  to relax the strict p guarantee to "approximately p", see
+                  tol parameter for controlling the tolerance.
+
+    Returns
+    -------
+    U : output graphlets, array of shape (n_sel, k_max) containing remaining 
+        candidate graphlets as rows of node indices in the adjacency matrix
+        of the input network.
+    
+    Notes
+    -----
+    Setting `verbose=True` will give useful information for diagnosing
+    the run.
     """
     if not presorted:
         if verbose: print(':: Computing tau scores...')
@@ -83,7 +111,9 @@ def select_nrank(U: np.array, A: np.array, Vs: np.array, p: int,
         idxs = np.argsort(taus)[::-1]
         U = U[idxs,:]
     
-    if verbose: print(':: * p:', p, 'graphlets per node')
+    if verbose: 
+        print(':: * Targeting', p, 'graphlets per node\n\tPROGRESS:')
+    
     Vss = set(Vs)
     n_vs = Vs.shape[0]
     count = 0
@@ -97,8 +127,10 @@ def select_nrank(U: np.array, A: np.array, Vs: np.array, p: int,
         if verbose:
             if i+1 in prcs:
                 prc = np.round((i+1) / n * 100, 1)
-                print(' \t* selection progress: ',i,', (',prc,'%)' \
-                      ', ', count,' selected')
+                avg_fill = np.round(C[Vs].mean(), 2)
+                print(' \t*',prc,'% i:',i, \
+                      '|', u_sel.sum(),'graphlets (', avg_fill, \
+                      'per seed ) |', (C > 0).sum(), 'seeds')
         for j in range(k):
             Uidx = U[i,j]
             if Uidx in Vss:
@@ -113,7 +145,14 @@ def select_nrank(U: np.array, A: np.array, Vs: np.array, p: int,
         if flag:
             if verbose:
                 print(':: Selection ready at iteration ',i,'(',prc,'%).')
+                print(':: Selected ', u_sel.sum(),'graphlets')
             break
+    
+    if strict_mode:
+        assert_msg = 'Selection not balanced, decrease p'
+        assert count == n_vs*p, assert_msg
+    else:
+        assert p - np.mean(C[C > 0]) < tol*p, assert_msg
     return U[u_sel,:], u_sel, C
 
 def binary_search_p(U: np.array, A: np.array, Vs: np.array, tol: int=1000, 
