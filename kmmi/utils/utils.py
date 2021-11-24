@@ -58,3 +58,20 @@ def prune_by_edge_weight(E: np.array, threshold: float=1e-3):
             else:
                 Et[i,j] = E[i,j]
     return Et
+
+@njit
+def unique_nodes(U: np.array, n: int) -> np.array:
+    """Function to find unique nodes in U.
+    
+    Notes
+    -----
+    This implementation is ca. 40-50x faster than np.unique(U) 
+    or set(U.ravel()), but requires knowledge about the number 
+    of nodes in the network. 
+    """
+    set_u = np.array([False]*n)
+    for u in U:
+        for v in u:
+            if v != -1:
+                set_u[v] = True
+    return np.where(set_u)[0]
