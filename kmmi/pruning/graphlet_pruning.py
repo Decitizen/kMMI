@@ -9,29 +9,12 @@ from kmmi.enumeration.graphlet_enumeration import *
 from kmmi.utils.utils import to_numpy_array, mean_ndiag, overlap_coefficient
 from kmmi.utils.autoload import *
 
-class Error(Exception):
-    """Base class for other exceptions"""
-    pass
-
-class SeedNodeError(Error):
-    """Exception raised if seed nodes are not fulfilling the desired selection criteria.
-
-    Attributes:
-        message -- explanation of the error
-    """
-
-    def __init__(self, message=""):
-        self.message = message + 'Increase number of seed nodes in the immediate ' \
-                       'neighborhood or remove v from force-selected nodes.'
-        super().__init__(self.message)
-
 def prune_by_density(U: np.array, A: np.array, ds: np.array=None, 
                      delta_min: float=0.7, delta_max: float=1.00) -> np.array: 
     """Prune all subgraphs Gs s.t. delta_min <= density(Gs) <= delta_max"""
     if ds is None:
         _, ds = graphlet_scores(U, A)
     d_sel = (delta_min <= ds) & (ds <= delta_max) 
-    d_unsel = (delta_min > ds) | (ds > delta_max)    
     assert d_sel.sum() > 0,  "All graphlets were pruned; " \
                              "selected density range may be too narrow, " \
                              "lower the delta_min or increase the delta_max " \
@@ -43,7 +26,14 @@ def strongly_connected(A: np.array, U: np.array):
     connected component in a directed network, namely that for each pair of 
     nodes u,v \in S there needs to exist at least one path for which u is 
     reachable from node v and vice versa.
+    
+    ws (np.array): array of shape (U.shape[0]) containing the graphlets' weighted 
+                   densities as rows such that indices are in order with corresponding
+                   graplets in U.
+    Returns:
+    --------
     """
+    
     SCC = lambda s: nx.is_strongly_connected(nx.DiGraph(A[s,:][:,s]))
     idxs = [SCC(s[s!=-1]) for s in U]
     return U[idxs, :]
@@ -56,6 +46,15 @@ def graphlet_scores(U: np.array, A: np.array):
     where A is the weighted adjacency matrix of the subgraph G_s 
     induced by the set of nodes $s = \{u_1,u_2,...,u_n}$, and n is 
     the number of edges  in the induced subgraph G_s.
+    
+    Returns:
+    --------
+    ws (np.array): array of shape (U.shape[0]) containing the graphlets' weighted 
+                   densities as rows such that indices are ordered corresponding
+                   to the order of graplets in U.
+    ds (np.array): array of shape (U.shape[0]) containing the graphlets' densities 
+                   as rows such that indices are in order with corresponding
+                   graplets in U.
     """
     n = U.shape[0]
     ws = np.zeros(n)
@@ -88,10 +87,11 @@ def select_nrank(U: np.array, A: np.array, Vs: np.array, p: int,
     Vss = set(Vs)
     n_vs = Vs.shape[0]
     count = 0
+    flag = False
     n = U.shape[0]
     k = U.shape[1]
     u_sel = np.array([False]*n)
-    C = np.zeros(n_vs, dtype=np.int16)
+    C = np.zeros(A.shape[0])
     prcs = set([int(i) for i in (n * (np.arange(1,10) / 10))])
     for i in range(n):
         if verbose:
@@ -99,7 +99,6 @@ def select_nrank(U: np.array, A: np.array, Vs: np.array, p: int,
                 prc = np.round((i+1) / n * 100, 1)
                 print(' \t* selection progress: ',i,', (',prc,'%)' \
                       ', ', count,' selected')
-
         for j in range(k):
             Uidx = U[i,j]
             if Uidx in Vss:
@@ -108,13 +107,14 @@ def select_nrank(U: np.array, A: np.array, Vs: np.array, p: int,
                     count += 1
                     u_sel[i] = True
                     
-                    if verbose:
-                        if count == n_vs*p:
-                            print(':: Selection ' \
-                                  'ready at iteration ',i,'(',prc,'%).')
-                            return U[u_sel,:], u_sel
-    
-    return U[u_sel,:], u_sel
+                    if count == n_vs*p:
+                        flag = True
+                        break
+        if flag:
+            if verbose:
+                print(':: Selection ready at iteration ',i,'(',prc,'%).')
+            break
+    return U[u_sel,:], u_sel, C
 
 def binary_search_p(U: np.array, A: np.array, Vs: np.array, tol: int=1000, 
                     n_max: int=5000, verbose=False):
@@ -165,9 +165,10 @@ def prune_subgraphs(U: np.array, k_min: int, k_max: int):
     all V2.
     
     Returns:
-    U (list): list containing remaining candidate 
-              graphlets as lists of node ids
-
+    --------
+    U (np.array): array of shape (n_sel, k_max) containing remaining candidate 
+                  graphlets as rows of node indices in the adjacency matrix of
+                  the underlying network.
     Notes:
     ------
     Worst-case running time is O(n^2), but on average the running time is quasi-linear
@@ -206,8 +207,9 @@ def prune(A: np.array, U: np.array, Vs: np.array, k_min: int, k_max: int,
         
     Returns:
     --------
-    U (np.array): array of shape (n, k_max) containing remaining 
-                              candidate graphlets as rows.
+    U (np.array): array of shape (n_sel, k_max) containing remaining candidate 
+                  graphlets as rows of node indices in the adjacency matrix of
+                  the underlying network.
     """ 
     t0p = process_time()
     n = U.shape[0]
