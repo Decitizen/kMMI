@@ -8,7 +8,8 @@ from time import process_time
 
 @njit
 def to_dependency_network(U: np.array, force_select: np.array):
-    """Form a dependency network such that nodes represent graphlets and 
+    """Form a dependency network such that the set of nodes S contains all
+    graphlets and 
     graphlets s,k \in U are connected if they share a force selected node 
     v in their intersection. Edge weight $w$ is defined as 
     $$ w_{sk} = |v \cap s \cap k|$$.
@@ -32,7 +33,6 @@ def to_dependency_network(U: np.array, force_select: np.array):
                       
     for i,Si in enumerate(U):
         for j,Sj in enumerate(U):
-            #if i < j:
             if i != j:
                 w = len(set(Si) & set(Sj))
                 if w > 0:
@@ -151,13 +151,14 @@ def sample_fs_configurations(A: np.array, U, n_v, fs, fs_map, target_time=30, ad
                                 'force selected nodes appear too infrequently. ' \
                                 'Either remove the problematic nodes or enable '\
                                 'adaptive running mode by setting `adaptive=True`.')
-            if verbose:
-                print(':: Discarded {:.2f}% of the configurations'.format(100*exs_frac))
-                fs, c, fs_map, A, u_sel, removed = __drop(fs, c, fs_map, A, u_sel, 
-                                                          removed, verbose)
+            
+            fs, c, fs_map, A, u_sel, removed = __drop(fs, c, fs_map, A, u_sel, 
+                                                      removed, verbose)
             i0 = i
             exs0 = len(ls_exs)
             enums = set()
+            if verbose:
+                print(':: Discarded {:.2f}% of the configurations'.format(100*exs_frac))
                 
     tdelta = process_time() - t0
     if verbose:
