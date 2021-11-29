@@ -211,14 +211,12 @@ def binary_search_p(U: np.array, A: np.array, Vs: np.array, tol: float=0.1,
         m = int((L + R) / 2)
         _, idxs, _ = select_nrank(U, A, Vs, m, verbose=verbose, presorted=True, 
                                   strict_mode=False, ptol=ptol)
+        d1 = idxs.sum() - S0.sum()
+        S0 = idxs    
         if idxs.sum() <= n_max:
-            d1 = idxs.sum() - S0.sum()
-            S0 = idxs
             L = m
             if verbose: print(f':: * {m} ({idxs.sum()}) set as the lower bound')
         else:
-            d1 = idxs.sum() - S0.sum()
-            S0 = idxs
             R = m
             if verbose: print(f':: * {m} ({idxs.sum()}) set as the upper bound')
     if verbose: print(':: Convergence succesful, final p: {} ({} selected)'
