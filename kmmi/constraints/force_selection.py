@@ -79,7 +79,7 @@ def maximal_independent_set(A: np.array) -> np.array:
     return s 
 
 def sample_fs_configurations(A: np.array, U, n_v, fs, fs_map, target_time=30, adaptive=True,
-                             tol=0.99, n_min_target=10000, verbose=False) -> list:
+                             tol=0.99, n_min_target=10000, c_limit: int=10, verbose=False) -> list:
     """Sample maximal independent sets to determine a configuration of force selected nodes
     that guarantees near-minimal overlap.
     
@@ -120,6 +120,7 @@ def sample_fs_configurations(A: np.array, U, n_v, fs, fs_map, target_time=30, ad
     enums = set()
     ls_exs = []
     
+    c_stop = 0
     c = np.zeros(len(fs), dtype=int)
     removed = []
     i = n_ss0 = exs0 = i0 = i0a = 0
@@ -141,6 +142,12 @@ def sample_fs_configurations(A: np.array, U, n_v, fs, fs_map, target_time=30, ad
                 pt0, n_ss0, i0a = __output_stats(fs, enums, i, i0a, c, t0, pt0, n_ss0)
         
         # EVALUATE
+        c_stop = c_stop + 1 if len(enums) == n_ss0 else 0
+        if c_stop == c_limit:
+            if verbose: 
+                print(f'Run terminated due to {c_limit} successive empty batches.')
+            break
+        
         exs_frac = (len(ls_exs)-exs0) / (i - i0)
         if exs_frac > tol:
             if not adaptive:
@@ -154,9 +161,10 @@ def sample_fs_configurations(A: np.array, U, n_v, fs, fs_map, target_time=30, ad
             i0 = i
             exs0 = len(ls_exs)
             enums = set()
+            c_stop = 0
             if verbose:
                 print(':: Discarded {:.2f}% of the configurations'.format(100*exs_frac))
-                
+        
     tdelta = process_time() - t0
     if verbose:
         print(':: GENERATION STATS:\n* {} generated\n* {} accepted\n' \
