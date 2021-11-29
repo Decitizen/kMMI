@@ -10,18 +10,18 @@ from kmmi.utils.utils import to_numpy_array, mean_ndiag, overlap_coefficient
 from kmmi.utils.autoload import *
 
 def prune_by_density(U: np.array, A: np.array, ds: np.array=None, 
-                     delta_min: float=0.7, delta_max: float=1.00) -> np.array: 
-    """Prune all subgraphs Gs s.t. delta_min <= density(Gs) <= delta_max"""
+                     rho_min: float=0.7, rho_max: float=1.00) -> np.array: 
+    """Prune all subgraphs G_s s.t. rho_min <= rho(G_s) <= rho_max"""
     if ds is None:
         _, ds = graphlet_scores(U, A)
     d_sel = (delta_min <= ds) & (ds <= delta_max) 
     assert d_sel.sum() > 0,  "All graphlets were pruned; " \
                              "selected density range may be too narrow, " \
-                             "lower the delta_min or increase the delta_max " \
+                             "lower the rho_min or increase the rho_max " \
                              "to relax the requirement."
     return U[d_sel,:]
 
-def strongly_connected(A: np.array, U: np.array):
+def strongly_connected(A: np.array, U: np.array) -> np.array:
     """Select all graphlets s in S which fulfill the definition of strongly 
     connected component in a directed network, namely that for each pair of 
     nodes u,v \in S there needs to exist at least one path for which u is 
@@ -29,11 +29,16 @@ def strongly_connected(A: np.array, U: np.array):
     
     Parameters
     ----------
-    ws (np.array): array of shape (U.shape[0]) containing the graphlets' weighted 
-                   densities as rows such that indices are in order with corresponding
-                   graplets in U.
+    U : input graphlets as rows of an array with shape (n, k_max) where elements 
+        are node indices in the adjacency matrix of the input network. Rows are 
+        padded from the right with -1 for graphlet sizes < k_max
+    A : weighted adjacency matrix of the input network
+    
     Returns:
     --------
+    U : output graphlets, array of shape (n_sel, k_max) containing remaining 
+        candidate graphlets as rows of node indices in the adjacency matrix
+        of the input network.
     """
     
     SCC = lambda s: nx.is_strongly_connected(nx.DiGraph(A[s,:][:,s]))
@@ -41,7 +46,7 @@ def strongly_connected(A: np.array, U: np.array):
     return U[idxs, :]
 
 @njit
-def graphlet_scores(U: np.array, A: np.array):
+def graphlet_scores(U: np.array, A: np.array) -> np.array:
     """Compute graphlet scores for graphlets in U. Graphlet scoring
     function is defined as such that, i!=j and
     $$\tau = \frac{1}{(n*(n-1))} \sum_{i,j \in s} A_{ij}$$
@@ -157,7 +162,7 @@ def select_nrank(U: np.array, A: np.array, Vs: np.array, p: int, ptol: int=0.01,
     return U[u_sel,:], u_sel, C
 
 def binary_search_p(U: np.array, A: np.array, Vs: np.array, tol: float=0.1, 
-                    ptol: float=0.01,  n_max: int=5000, verbose=False):
+                    ptol: float=0.01,  n_max: int=5000, verbose=False) -> tuple:
     """Compute the best value of p parameter for the select_nrank function. Useful when 
     the number of graphlet candidates is larger than what the resources available for 
     running the downstream tasks that use the coarse-grained network. This implementation
@@ -220,7 +225,7 @@ def binary_search_p(U: np.array, A: np.array, Vs: np.array, tol: float=0.1,
                       .format(m, S0.sum())) 
     return m, U[idxs,:]
 
-def prune_subgraphs(U: np.array, k_min: int, k_max: int):
+def prune_subgraphs(U: np.array, k_min: int, k_max: int) -> np.array:
     """For two node sets V1 and V2, if V1 is subgraph V2, prune V1. Guaranteed to find 
     all V2.
     
@@ -255,7 +260,7 @@ def prune_subgraphs(U: np.array, k_min: int, k_max: int):
     return U[sel,:]
 
 def prune(A: np.array, U: np.array, Vs: np.array, k_min: int, k_max: int, 
-          n_sel: int=None, verbose=False, weakly_connected=False):
+          n_sel: int=None, verbose=False, weakly_connected=False) -> np.array:
     """Prune candidate graphlets using a multi-step pruning pipeline.
     
     Steps:
