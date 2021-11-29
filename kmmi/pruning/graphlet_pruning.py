@@ -66,14 +66,20 @@ def graphlet_scores(U: np.array, A: np.array) -> np.array:
     n = U.shape[0]
     ws = np.zeros(n)
     ds = np.zeros(n)
-    for i in range(n):
-        Ui = U[i,:]
-        s = Ui[Ui >= 0]
-        n_s = len(s)
-        B = A[s,:][:,s]
-        ws[i] = mean_ndiag(B)
-        ds[i] = (B > 0.0).sum() / (n_s*(n_s-1))
-        
+    for v in range(n):
+        w = c = d = 0
+        n_s = U[v,:].shape[0]
+        for i in range(n_s):
+            for j in range(n_s):
+                if i == j: continue
+                if U[v,i] != -1 and U[v,j] != -1:
+                    Aij = A[U[v,i],U[v,j]]
+                    w = w + Aij 
+                    c += 1
+                    if Aij > 0:
+                        d += 1       
+        ws[v] = w / c if c > 0 else 0
+        ds[v] = d / c if c > 0 else 0
     return ws, ds
 
 @njit
