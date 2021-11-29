@@ -20,12 +20,13 @@ def to_dependency_network(U: np.array, force_select: np.array):
     E_const = np.zeros((n,n))
     fs_map = np.zeros((n, n_fs), dtype=bool_)
     fs_idsn = Dict()
+    fs = set(force_select)
                       
     for k, v in zip(force_select, np.arange(n_fs)):
         fs_idsn[k] = v
     
     for i, Si in enumerate(U):
-        fs_Si = set(force_select) & set(Si)
+        fs_Si = fs & set(Si)
         if len(fs_Si) > 0:
             for u in fs_Si:
                 fs_map[i,fs_idsn[u]] = True
@@ -33,9 +34,12 @@ def to_dependency_network(U: np.array, force_select: np.array):
     for i,Si in enumerate(U):
         for j,Sj in enumerate(U):
             if i != j:
-                w = len(set(Si) & set(Sj))
-                if w > 0:
-                    E_const[j,i] = w
+                Si_s = set(Si)
+                Sj_s = set(Sj)
+                if len(Si_s & Sj_s & fs) > 0:
+                    w = len(Si_s & Sj_s)
+                    if w > 0:
+                        E_const[j,i] = w
     
     idxs = np.array([(E_const[i,:] > 0).sum() != 0 
                      for i in range(E_const.shape[0])])
