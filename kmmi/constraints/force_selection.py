@@ -17,7 +17,6 @@ def to_dependency_network(U: np.array, force_select: np.array):
     n = len(U)
     n_fs = len(force_select)
     
-    ol_fs_ids = set()
     E_const = np.zeros((n,n))
     fs_map = np.zeros((n, n_fs), dtype=bool_)
     fs_idsn = Dict()
@@ -37,15 +36,13 @@ def to_dependency_network(U: np.array, force_select: np.array):
                 w = len(set(Si) & set(Sj))
                 if w > 0:
                     E_const[j,i] = w
-                    ol_fs_ids.add(j)
-                    ol_fs_ids.add(i)
     
     idxs = np.array([(E_const[i,:] > 0).sum() != 0 
                      for i in range(E_const.shape[0])])
     
     E_const = E_const[idxs,:][:,idxs]
     fs_map = fs_map[idxs,:]
-    return U[idxs,:], E_const, ol_fs_ids, fs_map
+    return U[idxs,:], E_const, fs_map, idxs
 
 @njit
 def maximal_independent_set(A: np.array) -> np.array:
@@ -110,7 +107,7 @@ def sample_fs_configurations(A: np.array, U, n_v, fs, fs_map, target_time=30, ad
     """
     map_fs = lambda x:  np.unique(np.where(fs_map[x,:])[1])
     
-    t = timeit.timeit(lambda: maximal_independent_set(E_const), number=100)
+    t = timeit.timeit(lambda: maximal_independent_set(A), number=100)
     n_sample = np.max([np.int32(1 / (t / 100)), 1000])
     rng = np.random.default_rng()
     u_sel = np.arange(U.shape[0])
