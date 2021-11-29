@@ -14,7 +14,7 @@ def prune_by_density(U: np.array, A: np.array, ds: np.array=None,
     """Prune all subgraphs G_s s.t. rho_min <= rho(G_s) <= rho_max"""
     if ds is None:
         _, ds = graphlet_scores(U, A)
-    d_sel = (delta_min <= ds) & (ds <= delta_max) 
+    d_sel = (rho_min <= ds) & (ds <= rho_max) 
     assert d_sel.sum() > 0,  "All graphlets were pruned; " \
                              "selected density range may be too narrow, " \
                              "lower the rho_min or increase the rho_max " \
