@@ -7,12 +7,35 @@ import timeit
 from time import process_time
 
 @njit
-def to_dependency_network(U: np.array, force_select: np.array):
+def to_dependency_network(U: np.array, force_select: np.array, extended=False):
     """Form a dependency network such that the set of nodes S contains all
-    graphlets and 
-    graphlets s,k \in U are connected if they share a force selected node 
-    v in their intersection. Edge weight $w$ is defined as 
-    $$ w_{sk} = |v \cap s \cap k|$$.
+    graphlets and graphlets s,k \in U are connected if they share a force selected node 
+    v in their intersection. Edge weight $w$ is defined as $$ w_{sk} = |v \cap s \cap k|$$.
+    Parameter `extended` controls for which type of dependency is used. By default the 
+    criteria is more relaxed and only graphlets that share force selected node(s) will be
+    taken into account.
+    
+    Parameters
+    ----------
+    U : weighted adjacency matrix for the dependency network
+    force_select : set of nodes (as numpy array) that each graphlet configuration 
+                   is required to contain
+    extended : by default dependency edge is added only if graphlets contain same force 
+               selected node(s). Set True for building a network such that it takes into 
+               account all overlapping seed nodes
+    
+    Returns
+    -------
+    U_out : output graphlets as rows of an array with shape (n_out, k_max) where elements 
+            are node indices in the adjacency matrix of the input network. Rows are 
+            padded from the right with -1 for graphlet sizes < k_max. (Note that n_out <= n)
+    E_const : weighted adjacency matrix of the dependency network where nodes 
+              represent graphlets and edges dependencies between graphlets. 
+              Numpy array dimensions are (n_out,n_out)
+    fs_map : mapping from force selected nodes to graphlets, numpy array dimensions: 
+             (n_out, n_fs)
+    idxs : numpy array of row indeces that can be used for selecting the rows in U_out from U 
+    
     """
     n = len(U)
     n_fs = len(force_select)
@@ -36,10 +59,8 @@ def to_dependency_network(U: np.array, force_select: np.array):
             if i != j:
                 Si_s = set(Si)
                 Sj_s = set(Sj)
-                if len(Si_s & Sj_s & fs) > 0:
-                    w = len(Si_s & Sj_s)
-                    if w > 0:
-                        E_const[j,i] = w
+                l_ij = len(Si_s & Sj_s) if extended else len(Si_s & Sj_s & fs) 
+                E_const[j,i] = len(Si_s & Sj_s) if l_ij > 0 else 0
     
     idxs = np.array([(E_const[i,:] > 0).sum() != 0 
                      for i in range(E_const.shape[0])])
@@ -82,7 +103,7 @@ def maximal_independent_set(A: np.array) -> np.array:
     s = np.where(I)[0]
     return s 
 
-def sample_fs_configurations(A: np.array, U, n_v, fs, fs_map, target_time=30, adaptive=True,
+def sample_fs_configurations(A: np.array, U, fs, fs_map, target_time=30, adaptive=True,
                              tol=0.99, n_min_target=10000, c_limit: int=10, verbose=False) -> list:
     """Sample maximal independent sets to determine a configuration of force selected nodes
     that guarantees near-minimal overlap.
@@ -93,6 +114,9 @@ def sample_fs_configurations(A: np.array, U, n_v, fs, fs_map, target_time=30, ad
     Parameters
     ----------
     A : weighted adjacency matrix of the input network
+    U : input graphlets as rows of an array with shape (n, k_max) where elements 
+        are node indices in the adjacency matrix of the input network. Rows are 
+        padded from the right with -1 for graphlet sizes < k_max
     fs : set of nodes that each graphlet configuration is required to contain
     fs_map : mapping of network nodes to graphlets (see `to_dependency_network` method)
     target_time : max time threshold for the run (unit in seconds)  
@@ -102,6 +126,7 @@ def sample_fs_configurations(A: np.array, U, n_v, fs, fs_map, target_time=30, ad
     -------
     ss (list of lists): configurations
     fs (np.array): updated set of force selected nodes
+    
     Notes
     -----
     An independent set is a set of nodes such that the subgraph
@@ -121,13 +146,12 @@ def sample_fs_configurations(A: np.array, U, n_v, fs, fs_map, target_time=30, ad
         print(':: --> Targeting {:.0f}s, threshold set @ {:.2f}%'
               .format(target_time, tol*100))
     
-    enums = set()
     ls_exs = []
-    
-    c_stop = 0
-    c = np.zeros(len(fs), dtype=int)
     removed = []
-    i = n_ss0 = exs0 = i0 = i0a = 0
+    enums = set()
+    
+    c = np.zeros(n_fsa, dtype=int)
+    i = n_ss0 = exs0 = i0 = i0a = c_stop = 0
     t0 = pt0 = process_time()
     while pt0 - t0 < target_time or len(enums) < n_min_target:
         for _ in range(n_sample):
