@@ -83,8 +83,9 @@ def graphlet_scores(U: np.array, A: np.array) -> np.array:
     return ws, ds
 
 @njit
-def select_nrank(U: np.array, A: np.array, Vs: np.array, p: int, ptol: int=0.01,
-                 presorted=False, strict_mode=True, verbose=False) -> np.array:
+def select_nrank(U: np.array, A: np.array, Vs: np.array, p_min: int, p_max: int,
+                 ptol: int=0.01,  n_iters: int=10, presorted=False, adaptive_p=True,
+                 verbose=False) -> np.array:
     """Selects p highest ranking graphlets per each node in the seed node set 
     Vs. This method assumes that U is already ordered in ascending ranking 
     order based on desired ranking criteria.
@@ -96,79 +97,142 @@ def select_nrank(U: np.array, A: np.array, Vs: np.array, p: int, ptol: int=0.01,
         padded from the right with -1 for graphlet sizes < k_max
     A : weighted adjacency matrix of the input network
     Vs : set of seed nodes that will be selected for
-    p : target number of graphlets to select per each seed node
-    ptol : allowed tolerance (fraction of p) when using the non-strict mode
+    p_min : target number of graphlets to select per each seed node
+    p_max : upper bound for the number of times each node can appear in the set of 
+            selected graphlets 
+    ptol : allowed tolerance parameter as a fraction of number of seed nodes
     presorted : set True if U rows are already in an ascending sorted order 
                 from the most to the least optimal.
-    strict_mode : controls how strict the selection behavior is, set False 
-                  to relax the strict p guarantee to "approximately p", see
-                  tol parameter for controlling the tolerance.
+    adaptive_p : set True if p_max is allowed to be relaxed adaptively, this allows
+                 finding the minimum p_max value such that all seed nodes are included 
+                 at least p_min times
 
     Returns
     -------
-    U : output graphlets, array of shape (n_sel, k_max) containing remaining 
-        candidate graphlets as rows of node indices in the adjacency matrix
-        of the input network.
+    U_out : output graphlets, array of shape (n_sel, k_max) containing remaining 
+        candidate graphlets as rows of node indices in the adjacency matrix of the 
+        input network
+    u_sel : boolean array of size U.shape[0] which determines which graphlets in 
+            the original list of graphlets 
+    C : counts of seed nodes in the set of selected output graphlets 
+    p_max : updated number of times each node can appear in the set of selected 
+            graphlets
     
     Notes
     -----
     Setting `verbose=True` will give useful information for diagnosing
     the run.
     """
+    assert p_min <= p_max
+    
+    n = U.shape[0]
+    k = U.shape[1]
+    n_v = A.shape[0]
+    n_vs = Vs.shape[0]
+    
     if not presorted:
         if verbose: print(':: Computing tau scores...')
         taus, _ = graphlet_scores(U, A)
         if verbose: print(':: Sorting based on tau scores...')
         idxs = np.argsort(taus)[::-1]
         U = U[idxs,:]
-    
-    if verbose: 
-        print(':: * Targeting', p, 'graphlets per node\n\tPROGRESS:')
-    
-    Vss = set(Vs)
-    n_vs = Vs.shape[0]
-    count = 0
-    flag = False
-    n = U.shape[0]
-    k = U.shape[1]
-    u_sel = np.array([False]*n)
-    C = np.zeros(A.shape[0])
-    prcs = set([int(i) for i in (n * (np.arange(1,10) / 10))])
-    for i in range(n):
-        if verbose:
-            if i+1 in prcs:
-                prc = np.round((i+1) / n * 100, 1)
-                avg_fill = np.round(C[Vs].mean(), 2)
-                print(' \t*',prc,'% i:',i, \
-                      '|', u_sel.sum(),'graphlets (', avg_fill, \
-                      'per seed ) |', (C > 0).sum(), 'seeds')
-        for j in range(k):
-            Uidx = U[i,j]
-            if Uidx in Vss:
-                if C[Uidx] != p:
-                    C[Uidx] += 1
-                    count += 1
-                    u_sel[i] = True
-                    
-                    if count == n_vs*p:
-                        flag = True
-                        break
-        if flag:
-            if verbose:
-                prc = np.round((i+1) / n * 100, 1)
-                print(':: Selection ready at iteration ',i,'(',prc,'%).')
-                print(':: Selected ', u_sel.sum(),'graphlets')
-            break
-    
-    if strict_mode:
-        assert_msg = 'Selection not balanced, decrease p'
-        assert count == n_vs*p, assert_msg
-    else:
-        assert p - np.mean(C[C > 0]) < ptol*p, assert_msg
-    return U[u_sel,:], u_sel, C
+        
+    while True:
+        for ii in range(n_iters):
+            if ii == 0:
+                U_idxs = np.arange(n)
+            else:
+                step = 100 if n > 1000 else 10
+                U_idxs = __block_shuffle(n, step)
+            if verbose: 
+                print(':: * Targeting at least', p_min, \
+                      ' graphlets per node\n\tPROGRESS:')
+            count = 0
+            stop_flag = False
+            u_sel = np.array([False]*n)
+            C = np.zeros(n_v)
 
-def binary_search_p(U: np.array, A: np.array, Vs: np.array, tol: float=0.1, 
-                    ptol: float=0.01,  n_max: int=5000, verbose=False) -> tuple:
+            prcs = set([int(i) for i in (n * (np.arange(1,10) / 10))])
+            
+            for i in range(n):
+                if verbose:
+                    if i+1 in prcs:
+                        prc = np.round((i+1) / n * 100, 1)
+                        avg_fill = np.round(C[Vs].mean(), 2)
+                        print(' \t*',prc,'% i:',i, \
+                              '|', u_sel.sum(),'graphlets (', avg_fill, \
+                              'per seed ) |', (C > 0).sum(), 'seeds')
+                # Condition 1
+                cond_one = False
+                for j in range(k):
+                    v = U[U_idxs[i],j]
+                    if v != -1:
+                        if C[v]+1 >= p_max:
+                            cond_one = True
+                            break
+                if cond_one: continue
+                u_sel[U_idxs[i]] = True
+                # Count
+                for j in range(k):
+                    v = U[U_idxs[i],j]
+                    if v >= 0:
+                        C[v] += 1
+                        # Condition 2
+                        if C[v] == p_min:
+                            count += 1
+                            if count == n_vs:
+                                stop_flag = True
+                                break
+                if stop_flag:
+                    if verbose:
+                        prc = np.round((i+1) / n * 100, 1)
+                        print(':: Selection ready at iteration ',i,'(',prc,'%).')
+                        print(':: Selected ', u_sel.sum(),'graphlets')
+                    break
+            if stop_flag: break
+        
+        if n_vs-count <= ptol*n_vs:
+            if verbose:
+                print('::', count, '/', n_vs, 'seed nodes were selected, ' \
+                      'selection successful.')
+                print(':: Final p range: [', p_min, ',', p_max, ']')
+            break
+        else:
+            if verbose:
+                print(':: Not all seed nodes could be selected,', \
+                      np.sum(C>0), '/', n_vs, 'seed nodes were included in the selection, '\
+                      'of which', count, 'nodes at least p_min times.')
+                
+            if adaptive_p and verbose:
+                print(':: Relaxing p_max criteria to:', p_max+1)
+                print(50*'--')
+            if adaptive_p:
+                p_max += 1
+            else:
+                break
+                #raise Exception(':: Selection was unsuccessful.')
+
+    return U[u_sel,:], u_sel, C, p_max
+
+@njit
+def __block_shuffle(n, step=10):
+    """Generate approximate ordering of the U by blocking indeces of U into 
+    blocks of size `step` and shuffling the order of the indeces in each block. 
+    """
+    U_idxs = np.arange(n)
+    for i in np.arange(0,n,step):
+        if i <= n - 2*step:
+            Ui = U_idxs[i:i+step]
+            np.random.shuffle(Ui)
+            U_idxs[i:i+step] = Ui
+        else:
+            Ui = U_idxs[i:]
+            np.random.shuffle(Ui)
+            U_idxs[i:] = Ui
+    return U_idxs
+
+def binary_search_p(U: np.array, A: np.array, Vs: np.array, p_max: int, tol: float=0.1,
+                    ptol: float=0.05,  n_max: int=5000, verbose=False) -> tuple:
     """Compute the best value of p parameter for the select_nrank function. Useful when 
     the number of graphlet candidates is larger than what the resources available for 
     running the downstream tasks that use the coarse-grained network. This implementation
@@ -197,26 +261,28 @@ def binary_search_p(U: np.array, A: np.array, Vs: np.array, tol: float=0.1,
     assert n > n_max, f'n: {n} > n_max: {n_max}, binary search isn\'t required'
     if n_max > 2e4: print(f'WARNING: n_max: {n_max} is higher than what the ' \
                           'pipeline has been benchmarked for.')
-
+    
     if verbose:
-        print(':: Initializing binary search for determining upper bound for p...')
+        print(':: Initializing binary search for determining upper bound for p_min...')
         print(f':: Tolerance: {tol}')
     i = n_sel = 1
     while n_sel < n_max:
         p = 2**i
-        _, idxs, _ = select_nrank(U, A, Vs, p, verbose=verbose, presorted=True, 
-                                  strict_mode=False, ptol=ptol)
+        p_max = np.max([p, p_max])
+        _, idxs, _, p_max = select_nrank(U, A, Vs, p, p_max, verbose=verbose, 
+                                         presorted=True, adaptive_p=False, ptol=ptol)
         n_sel = idxs.sum()
         i += 1
 
-    if verbose: print(f':: Initial upper bound found for the p: {p}')
+    if verbose: print(f':: Initial upper bound found for the p_min: {p}')
     d1 = np.inf
     S0 = idxs
     L, R = p/2, p
     while np.abs(d1) > tol*n_max:
         m = int((L + R) / 2)
-        _, idxs, _ = select_nrank(U, A, Vs, m, verbose=verbose, presorted=True, 
-                                  strict_mode=False, ptol=ptol)
+        p_max = np.max([p, p_max])
+        _, idxs, _, p_max = select_nrank(U, A, Vs, m, p_max, verbose=verbose, 
+                                         presorted=True, adaptive_p=False, ptol=ptol)
         d1 = idxs.sum() - S0.sum()
         S0 = idxs    
         if idxs.sum() <= n_max:
@@ -225,7 +291,7 @@ def binary_search_p(U: np.array, A: np.array, Vs: np.array, tol: float=0.1,
         else:
             R = m
             if verbose: print(f':: * {m} ({idxs.sum()}) set as the upper bound')
-    if verbose: print(':: Convergence succesful, final p: {} ({} selected)'
+    if verbose: print(':: Convergence succesful, final p_min: {} ({} selected)'
                       .format(m, S0.sum())) 
     return m, U[idxs,:]
 
@@ -262,6 +328,64 @@ def prune_subgraphs(U: np.array, k_min: int, k_max: int) -> np.array:
                 if not sel[i]:
                     break
     return U[sel,:]
+
+@njit
+def overlap_selection(U: np.array, omega: float=0.5, n_max: int=5000, 
+                      presorted=False, verbose=False):
+    """Select at most n_max graphlets such that any pair (s_i, s_j) of graphlets
+    will have at most omega overlap coefficient.
+    
+    Parameters
+    ----------
+    U : input graphlets as rows of an array with shape (n, k_max) where elements 
+        are node indices in the adjacency matrix of the input network. Rows are 
+        padded from the right with -1 for graphlet sizes < k_max
+    omega : threshold parameter for maximum allowed overlap 
+    n_max : maximum cap for how many graphlets can be selected
+    presorted : set True if U rows are already in an ascending sorted order 
+                from the most to the least optimal.
+    
+    Returns:
+    --------
+    S (list of sets): selected graphlets as list of sets
+    
+    Notes:
+    ------
+    Running time is positively correlated on both the allowed overlap (omega) 
+    and n_max, decreasing both will result in reduced running times.
+    
+    Time complexity in worst-case is approximately O(mn_max^2), where m is 
+    the constant cost of the set intersection operation for pair of graphlets. 
+    However, note that as omega -> 0, the rate of growth of S will slow down, 
+    and there is a regime of omega beyond which size of S will only be able to 
+    reach a fraction of n_max.
+    """
+    if not presorted:
+        if verbose: print(':: Computing tau scores...')
+        taus, _ = graphlet_scores(U, A)
+        if verbose: print(':: Sorting based on tau scores...')
+        idxs = np.argsort(taus)[::-1]
+        U = U[idxs,:]
+        if verbose: print(':: Sorting completed...')        
+        
+    n = U.shape[0]
+    S = []
+    u_sel = np.array([False]*n)
+    for i in range(n):
+        ols = False
+        si = set(U[i,:]) - set([-1])
+        for sj in S:
+            li, lj = len(si), len(sj)
+            dnmr = li if li < lj else lj 
+            if len(si & sj) / dnmr > omega:
+                ols = True
+                break
+        if not ols:
+            u_sel[i] = True
+            S.append(si)
+            if len(S) == n_max:
+                break
+    return S, u_sel
 
 def prune(A: np.array, U: np.array, Vs: np.array, k_min: int, k_max: int, 
           n_sel: int=None, verbose=False, weakly_connected=False) -> np.array:
