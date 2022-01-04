@@ -200,33 +200,42 @@ def shake(A: np.array, Ho: np.array, k: int, p: int, p_w: np.array=None,
                 break
     return H
 
-def shake_fs(A: np.array, Ho: np.array, H_fs_opt: np.array, fss: list, k: int, p: int):
-    """Implements the perturbation routine for the VNS when forced selection is used 
-    H by randomly drawing p node ids from the H without replacement and replacing them 
-    with p randomly drawn node ids from the complement of H.
+def shake_fs(A: np.array, Ho: np.array, H_fs_opt: np.array, fss: list, n_ss: dict, k: int, p: int):
+    """Implements the perturbation routine for the VNS when forced selection is used.
+    
+        Method has two different behaviors that are dependent on the p value and H_fs size:
+        1. when p is smaller than the size of H_fs, only nodes in H are swapped
+        2. when p is at least the size of H_{fs}, then also the H_fs configuration 
+           is swapped
     """
+    assert k > len(H_fs_opt), 'size of H_fs is larger than k, try increasing k'
     n = A.shape[0]
-    H = Ho.copy()
-    H_fs = fss[np.random.choice(len(fss))] 
-    
-    l_diff = len(H_fs_opt) - len(H_fs) 
-    if l_diff != 0:
-        if l_diff > 0: # Add l_diff more
-            Hp = [sample_from_HC(A, H) for _ in range(l_diff)]
-            Hp += list(H)
-            H = np.array(Hp)
+    Aset = set(np.arange(A.shape[0]))
         
-        else: # Remove
-            idxs = np.random.choice(len(Ho), size=-l_diff, replace=False)            
-            H = np.array([v for i,v in enumerate(H) if i not in idxs])
-    
-    if p > len(H_fs):
-        replace_idxs = np.random.choice(len(H), size=p-len(H_fs), replace=False)
-        for i in range(p - len(H_fs)):
-            HC = np.concatenate([H,H_fs], axis=0)
-            H[replace_idxs[i]] = sample_from_HC(A, HC)
-            break
-    
+    if p <= len(Ho):
+        H = Ho.copy()
+        H_fs = H_fs_opt.copy()
+        idxs = np.random.choice(len(Ho), size=p, replace=False)
+        HC = Aset - (set(Ho) | set(H_fs_opt))
+        H[idxs] = np.random.choice(list(HC), size=p, replace=False)
+    else: 
+        H_fs = fss[__sample_up_to_class_p(k-1, n_ss)]
+        p_diff = p - len(H_fs)
+        l_diff = k - len(H_fs)
+        H = np.array(list(set(Ho) - set(H_fs)))
+        if p_diff > 0:
+            HC = Aset - (set(H) | set(H_fs))
+            Hn = np.random.choice(list(HC), size=p_diff, replace=False)
+            l_diff = k-len(H_fs)-len(Hn)
+        if len(H) >= l_diff:
+            H = np.random.choice(list(H), size=l_diff, replace=False)
+        if p_diff > 0:
+            H = np.concatenate([H,Hn], axis=0)
+        if len(H) + len(H_fs) < k:
+            HC = Aset - (set(H) | set(H_fs))
+            Hn = np.random.choice(list(HC), size=k-len(H)-len(H_fs), replace=False)
+            H = np.concatenate([H,Hn], axis=0)
+            
     Hfs_len = len(H) + len(H_fs)
     assert Hfs_len == k, f'H combined size {Hfs_len} does not match with k={k}'
     assert len(set(H_fs) & set(H)) == 0, f'There is overlap in the selection\n * : ' \
@@ -239,6 +248,27 @@ def sample_from_HC(A, H):
         H_prime = np.random.randint(0, A.shape[0])
         if H_prime not in H:
             return H_prime
+        
+def __sample_up_to_class_p(p, n_ss):
+    assert p >= min(n_ss.keys()), 'p should be >= shortest length class in n_ss'
+    # Pick randomly from classes of length <= p
+    keys_sorted = np.array(sorted(n_ss.keys())) 
+    keys_idxs = keys_sorted[keys_sorted <= p]
+    lens = [len(n_ss[idx]) for idx in keys_idxs]
+    idx = np.random.choice(np.sum(lens), replace=False)
+    idx_t = [(i,idx - sum(lens[0:i])) for i in range(len(lens)) 
+             if idx < np.sum(lens[0:i+1])][0]
+    out_idx = n_ss[keys_idxs[idx_t[0]]][idx_t[1]]
+    return out_idx
+
+def __to_len_classes(ss):
+    n_ss = {}
+    for i,s in enumerate(ss):
+        n_s = len(s)
+        if n_s not in n_ss:
+            n_ss[n_s] = []
+        n_ss[n_s].append(i)
+    return n_ss
         
 def OVNS(k: int, A: np.array, k_lims: tuple, k_step: int=1, timetol: int=300, ls_tol: float=0.0, 
          ls_mode='first', use_pref_attachment=False, init_mode='heaviest-edge', beta_ratio: float=0.5, 
@@ -277,10 +307,11 @@ def OVNS(k: int, A: np.array, k_lims: tuple, k_step: int=1, timetol: int=300, ls
     assert 0.0 < w_quantile < 1.0, 'Improper value, select value from range [0.0,1.0]'
     n = A.shape[0]
     assert k <= n, 'Input k value is greater than n; select k such that k <= n'
-    assert A[0:4,:].sum() == A[:,0:4].sum(), 'Directed networks are not supported'
+    assert A[0:4,:].sum().round(6) == A[:,0:4].sum().round(6), 'Directed networks are not supported'
     if k == n: return np.arange(0,n), A.sum()/2
     if k_lims[1] > n-k:
-        print(':: WARNING: upper limit {} of the k_lims is above the available pool of values.'.format(k_lims[1]))
+        print(':: WARNING: upper limit {} of the k_lims is above the available pool ' \
+              ' of values.'.format(k_lims[1]))
         k_lims = (k_lims[0], np.min([k, n-k]))
         print('::      --> readjusted to {}.'.format(k_lims))
         
@@ -336,8 +367,8 @@ def OVNS(k: int, A: np.array, k_lims: tuple, k_step: int=1, timetol: int=300, ls
     return Ho, Ho_w
 
 def OVNSfs(k: int, A: np.array, fss: list, k_lims: tuple, k_step: int=1, timetol: int=300,
-            ls_tol: float=0.0, ls_mode: str='best', beta_ratio: float=0.25, seed: int=None, 
-            w_quantile: float=0.01, max_iter: int=100000, verbose=False): 
+           ls_tol: float=0.0, ls_mode: str='best', beta_ratio: float=0.25, seed: int=None, 
+           w_quantile: float=0.01, max_iter: int=100000, init_solution: tuple=None, verbose=False): 
     """Variable neighborhood search heuristic for the HkS problem - augmented with forced node 
     selection for pre-defined set of nodes. 
     
@@ -362,6 +393,9 @@ def OVNSfs(k: int, A: np.array, fss: list, k_lims: tuple, k_step: int=1, timetol
     w_quantile : define the quantile of edge weights that will be explored during each local 
                  neighorhood update iteration, lower values in increase the
     max_iter : maximum number of iterations after last successful update
+    init_solution : initial solution as a tuple of np.arrays, where 1 index has the 
+                    configuration of force selected seed nodes and 0 has the remaining
+                    part of the solution
     
     Returns
     -------
@@ -374,7 +408,8 @@ def OVNSfs(k: int, A: np.array, fss: list, k_lims: tuple, k_step: int=1, timetol
                                         " 'first' or 'best'" 
     n = A.shape[0]
     assert k <= n, 'Input k value is greater than n; select k such that k <= n'
-    assert A[0:4,:].sum() == A[:,0:4].sum(), 'Directed networks are not supported'
+    assert A[0:4,:].sum().round(6) == A[:,0:4].sum().round(6), 'Directed networks are ' \
+                                                               'not supported'
     assert 0.0 < w_quantile < 1.0, 'Improper value, select value from range [0.0,1.0]'
 
     if k == n: return np.arange(0,n), A.sum()/2
@@ -385,6 +420,10 @@ def OVNSfs(k: int, A: np.array, fss: list, k_lims: tuple, k_step: int=1, timetol
         k_lims = (k_lims[0], np.min([k, n-k]))
         print('::      --> readjusted to {}.'.format(k_lims))
     
+    n_ss = __to_len_classes(fss)
+    assert k >= min(n_ss.keys()), 'Input k value is smaller than the lowest available ' \
+                                  'seed node configuration'
+    
     find_maxima = ls_mode == 'best'
     w_thres = np.quantile(A[A > 0.0], 1-w_quantile)
     A_as = np.argsort(A)[:,::-1]
@@ -393,9 +432,17 @@ def OVNSfs(k: int, A: np.array, fss: list, k_lims: tuple, k_step: int=1, timetol
     # Initialize
     t0 = process_time()
     p_w = None
-    H, H_w, p_w, Ho_fs = init_solution_weighted_degree_ranking_fs(A, k, fss, beta_ratio)
-    Ho, Ho_w = local_search_ovns_fs(H, Ho_fs, H_w, A, A_beam=A_beam, verbose=verbose,
-                                       find_maxima=find_maxima, tol=ls_tol, ls_tol=ls_tol)
+    if init_solution is None:
+        H, H_w, p_w, Ho_fs = init_solution_weighted_degree_ranking_fs(A, k, fss, beta_ratio)
+        Ho, Ho_w = local_search_ovns_fs(H, Ho_fs, H_w, A, A_beam=A_beam, verbose=verbose,
+                                        find_maxima=find_maxima, tol=ls_tol, ls_tol=ls_tol)
+    else:
+        H, H_fs = init_solution
+        Ho = H
+        Ho_fs = H_fs
+        H_f = np.concatenate([H, H_fs], axis=0)
+        H_w = Ho_w = __sub_sum(A, H_f)
+            
     delta_t = process_time()-t0
     print(':: Initial local search completed.')
     print(':: LS took {}, value: {}\n'.format(str(td(seconds=delta_t)), Ho_w))
@@ -405,12 +452,12 @@ def OVNSfs(k: int, A: np.array, fss: list, k_lims: tuple, k_step: int=1, timetol
         k_cur = k_lims[0]
         while k_cur <= k_lims[1] and process_time() - t0 < timetol:
             # Perturbate    
-            H, H_fs = shake_fs(A, Ho, Ho_fs, fss, k, k_cur)
+            H, H_fs = shake_fs(A, Ho, Ho_fs, fss, n_ss, k, k_cur)
             if verbose: print(':: Perturbation @ depth ', k_cur)
             
             # Find local improvement
             H_f = np.concatenate([H, H_fs], axis=0)
-            H_w = __sub_sum(A, H)
+            H_w = __sub_sum(A, H_f)
             H, H_w = local_search_ovns_fs(H, H_fs, H_w, A, A_beam, verbose=verbose, 
                                        find_maxima=find_maxima, tol=ls_tol, ls_tol=ls_tol)
             i += 1
