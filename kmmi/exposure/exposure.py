@@ -145,7 +145,7 @@ def binary_search_spectral_radius(katz_l1, A, weighted=True, verbose=False, max_
                 print(':: Initial bounds: [{:.4f},{:.4f}]'.format(alpha**-1, alpha_max**-1))
             break
     L = alpha_max
-    R = alpha_max * 2
+    R = alpha_min = alpha_max * 2
     # Binary search
     i = 0
     d0 = [L,R]
