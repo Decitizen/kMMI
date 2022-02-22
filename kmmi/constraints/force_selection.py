@@ -12,8 +12,8 @@ def to_dependency_network(U: np.array, force_select: np.array, extended=False):
     graphlets and graphlets s,k \in U are connected if they share a force selected node 
     v in their intersection. Edge weight $w$ is defined as $$ w_{sk} = |v \cap s \cap k|$$.
     Parameter `extended` controls for which type of dependency is used. By default the 
-    criteria is more relaxed and only graphlets that share force selected node(s) will be
-    taken into account.
+    criteria is relaxed such that only graphlets that share force selected node(s) will be
+    considered.
     
     Parameters
     ----------
@@ -137,7 +137,7 @@ def sample_fs_configurations(A: np.array, U, fs, fs_map, target_time=30, adaptiv
     map_fs = lambda x:  np.unique(np.where(fs_map[x,:])[1])
     
     t = timeit.timeit(lambda: maximal_independent_set(A), number=100)
-    n_sample = np.max([np.int32(1 / (t / 100)), 1000])
+    n_sample = np.max([np.int32(100 / t), 1000])
     rng = np.random.default_rng()
     u_sel = np.arange(U.shape[0])
     n_fsa = len(fs)
