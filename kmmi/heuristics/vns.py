@@ -220,26 +220,6 @@ def ls_one_n(Ho, Ho_w, A, tol=0.0, verbose=False):
     if verbose: print(':: No improvement found during local search.')
     return Ho, Ho_w
 
-# Remove
-@njit
-def local_search_ovns_fs(Ho, Ho_fs, Ho_w, A, A_beam, verbose=False, 
-                      tol=0.0, ls_tol=0.0, find_maxima=False):
-    """Computes local search in the 1-neighborhood of the Ho set. Select between
-    'first improvement' and 'best improvement' strategies with find_maxima parameter.
-    (best improvement strategy finds the local maxima).
-    """
-    H_t0_w = 0.0
-    n = A.shape[0]
-    
-    while Ho_w - H_t0_w > tol * Ho_w:
-        H_t0_w = Ho_w
-        Ho, Ho_w = ls_one_n_beam_fs(Ho, Ho_fs, Ho_w, A, A_beam, ls_tol, verbose)
-        if not find_maxima:
-            return Ho, Ho_w
-
-    if verbose: print(':: Local maxima:', Ho_w, '\n')
-    return Ho, Ho_w
-
 def shake(A: np.array, Ho: np.array, k: int, p: int, alpha: np.array, beta: np.array,
           p_w: np.array=None, use_pref_attachment=False):
     """Implements the perturbation routine for the VNS (variable neighborhood search)
