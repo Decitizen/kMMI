@@ -33,7 +33,7 @@ def to_numpy_array(U: list) -> np.array:
     return Uc
 
 @njit
-def mean_ndiag(B):
+def mean_ndiag(B) -> int:
     n = B.shape[0]
     return (B.sum()-np.diag(B).sum())/(n*(n-1))
 
@@ -65,9 +65,9 @@ def unique_nodes(U: np.array, n: int) -> np.array:
     
     Notes
     -----
-    This implementation is ca. 40-50x faster than np.unique(U) 
-    or set(U.ravel()), but requires knowledge about the number 
-    of nodes in the network. 
+    This implementation is ca. 1-2 orders of magnitude faster 
+    than np.unique(U) or set(U.ravel()), but requires knowledge 
+    about the number of nodes in the network. 
     """
     set_u = np.array([False]*n)
     for u in U:
@@ -75,3 +75,12 @@ def unique_nodes(U: np.array, n: int) -> np.array:
             if v != -1:
                 set_u[v] = True
     return np.where(set_u)[0]
+
+@njit
+def __sub_sum(A, u):
+    """Function for computing subgraph/graphlet weight."""
+    eps = 0
+    for ui in u:
+        for uj in u:
+            eps += A[ui,uj]
+    return eps / 2
