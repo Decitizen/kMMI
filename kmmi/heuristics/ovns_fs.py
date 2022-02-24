@@ -132,7 +132,7 @@ def OVNS_fs(k: int, A: np.array, fss: list, k_lims: tuple, k_step: int=1, timeto
                                               one_in_k=one_in_k, verbose=verbose)
             if verbose and find_maxima:
                 if H_w != Ho_w:
-                    print(':: Local maxima:', Ho_w, '\n')
+                    print(':: Local maxima:', H_w, '\n')
             i += 1
             i0 += 1
             svns_cond = __svns_score(H_w, Ho_w,

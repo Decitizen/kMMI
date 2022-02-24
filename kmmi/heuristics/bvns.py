@@ -76,7 +76,7 @@ def BVNS(k: int, A: np.array, k_lims: tuple, k_step: int=1, timetol: int=300,
                                            verbose=verbose)
             if verbose and find_maxima:
                 if H_w != Ho_w: 
-                    print(':: Local maxima:', Ho_w, '\n')
+                    print(':: Local maxima:', H_w, '\n')
             i += 1
             i0 += 1
             if H_w > Ho_w:
