@@ -1,7 +1,7 @@
 import numpy as np
 import networkx as nx
 from numba import *
-from kmmi.utils.utils import __sub_sum
+from kmmi.utils.utils import sub_sum
 
 @njit
 def initialize_degree_vecs(A, H=None):
@@ -50,7 +50,7 @@ def init_solution_weighted_degree_ranking_fs(A: np.array, k: int, fss: list,
     """
     n = A.shape[0]
     H_fs = np.zeros(n, dtype=bool)
-    idx = np.argmax([__sub_sum(A, s) for i,s in enumerate(fss)])
+    idx = np.argmax([sub_sum(A, s) for i,s in enumerate(fss)])
     H_fs[fss[idx]] = True
     score_order, p_w = __weighted_degree_rank(A, beta_ratio)    
     
@@ -81,7 +81,7 @@ def init_solution_heaviest_edge_ranking(A, k, verbose=False):
                     if verbose: 
                         print(':: H has reached size of k: {}, breaking'.format(k))
                     idxs = np.array(H)
-                    H_w = __sub_sum(A, idxs)
+                    H_w = sub_sum(A, idxs)
                     H = np.zeros(n, dtype=bool)
                     H[idxs] = True
                     return H, H_w
@@ -142,7 +142,7 @@ def init_solution_drop_initial_fs(A, k, fss=None):
                 fsi = np.zeros(n, dtype=bool)
                 fsi[fss[i,:]] = True 
                 fsi = H | fsi
-                fsi_w = __sub_sum(A, np.where(fsi)[0])
+                fsi_w = sub_sum(A, np.where(fsi)[0])
                 if fsi_w > max_w:
                     max_w = fsi_w
                     max_idx = i

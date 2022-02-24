@@ -6,7 +6,7 @@ from time import process_time
 from datetime import timedelta
 
 from kmmi.enumeration.graphlet_enumeration import *
-from kmmi.utils.utils import to_numpy_array, mean_ndiag, overlap_coefficient
+from kmmi.utils.utils import *
 from kmmi.utils.autoload import *
 
 def prune_by_density(U: np.array, A: np.array, ds: np.array=None, 
@@ -210,7 +210,6 @@ def select_nrank(U: np.array, A: np.array, Vs: np.array, p_min: int, p_max: int,
                 p_max += 1
             else:
                 break
-                #raise Exception(':: Selection was unsuccessful.')
 
     return U[u_sel,:], u_sel, C, p_max
 
@@ -232,7 +231,7 @@ def __block_shuffle(n, step=10):
     return U_idxs
 
 def binary_search_p(U: np.array, A: np.array, Vs: np.array, p_max: int, tol: float=0.1,
-                    ptol: float=0.05,  n_max: int=5000, verbose=False) -> tuple:
+                    ptol: float=0.05,  n_max: int=5000, n_iters=1, verbose=False) -> tuple:
     """Compute the best value of p parameter for the select_nrank function. Useful when 
     the number of graphlet candidates is larger than what the resources available for 
     running the downstream tasks that use the coarse-grained network. This implementation
@@ -258,6 +257,7 @@ def binary_search_p(U: np.array, A: np.array, Vs: np.array, p_max: int, tol: flo
     """
     n = U.shape[0]
     n_v = A.shape[0]
+    n_U = len(unique_nodes(U, n_v))
     assert n > n_max, f'n: {n} > n_max: {n_max}, binary search isn\'t required'
     if n_max > 2e4: print(f'WARNING: n_max: {n_max} is higher than what the ' \
                           'pipeline has been benchmarked for.')
@@ -269,8 +269,12 @@ def binary_search_p(U: np.array, A: np.array, Vs: np.array, p_max: int, tol: flo
     while n_sel < n_max:
         p = 2**i
         p_max = np.max([p, p_max])
-        _, idxs, _, p_max = select_nrank(U, A, Vs, p, p_max, verbose=verbose, 
-                                         presorted=True, adaptive_p=False, ptol=ptol)
+        _, idxs, _, p_max = select_nrank(U, A, Vs, p, p_max, 
+                                         n_iters=n_iters,
+                                         presorted=True, 
+                                         adaptive_p=False, 
+                                         ptol=ptol,
+                                         verbose=verbose)
         n_sel = idxs.sum()
         i += 1
 
@@ -278,11 +282,16 @@ def binary_search_p(U: np.array, A: np.array, Vs: np.array, p_max: int, tol: flo
     d1 = np.inf
     S0 = idxs
     L, R = p/2, p
-    while np.abs(d1) > tol*n_max:
+    while True:
         m = int((L + R) / 2)
         p_max = np.max([p, p_max])
-        _, idxs, _, p_max = select_nrank(U, A, Vs, m, p_max, verbose=verbose, 
-                                         presorted=True, adaptive_p=False, ptol=ptol)
+        _, idxs, C, p_max = select_nrank(U, A, Vs, m, p_max, 
+                                         n_iters=n_iters,
+                                         presorted=True, 
+                                         adaptive_p=True, 
+                                         ptol=ptol,
+                                         verbose=verbose)
+        
         d1 = idxs.sum() - S0.sum()
         S0 = idxs    
         if idxs.sum() <= n_max:
@@ -291,8 +300,15 @@ def binary_search_p(U: np.array, A: np.array, Vs: np.array, p_max: int, tol: flo
         else:
             R = m
             if verbose: print(f':: * {m} ({idxs.sum()}) set as the upper bound')
-    if verbose: print(':: Convergence succesful, final p_min: {} ({} selected)'
-                      .format(m, S0.sum())) 
+        if np.abs(d1) < tol*n_max:    
+            break
+        
+    if n_U - (C>=p_min).sum() > n_U*tol:
+        print(':: WARNING! Only {}/{} nodes included, does not satisfy the tolerance {:.2f}%.' \
+              ' Bounds p in [{},{}]'.format((C>=p_min).sum()), n_U, tol*100, p_min, p_max)
+    else:
+        if verbose: print(':: Convergence succesful, final p_min: {} ({} selected)'
+                      .format(m, S0.sum()))
     return m, U[idxs,:]
 
 def prune_subgraphs(U: np.array, k_min: int, k_max: int) -> np.array:
@@ -387,7 +403,7 @@ def overlap_selection(U: np.array, omega: float=0.5, n_max: int=5000,
                 break
     return S, u_sel
 
-def prune(A: np.array, U: np.array, Vs: np.array, k_min: int, k_max: int, 
+def prune(A: np.array, U: np.array, k_min: int, k_max: int, 
           n_sel: int=None, verbose=False, weakly_connected=False) -> np.array:
     """Prune candidate graphlets using a multi-step pruning pipeline.
     
@@ -407,7 +423,8 @@ def prune(A: np.array, U: np.array, Vs: np.array, k_min: int, k_max: int,
     t0p = process_time()
     n = U.shape[0]
     U_pruned = U
-           
+    Vs = unique_nodes(U_pruned, A.shape[0])
+    
     if not weakly_connected:
         if verbose: 
             t0 = process_time()

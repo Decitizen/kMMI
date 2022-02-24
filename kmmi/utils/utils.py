@@ -77,7 +77,7 @@ def unique_nodes(U: np.array, n: int) -> np.array:
     return np.where(set_u)[0]
 
 @njit
-def __sub_sum(A, u):
+def sub_sum(A, u):
     """Function for computing subgraph/graphlet weight."""
     eps = 0
     for ui in u:
