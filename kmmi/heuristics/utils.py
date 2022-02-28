@@ -44,26 +44,26 @@ def __create_bvns_array(A):
     return Ap
 
 @njit
-def __create_beam_array(A, A_as, w_thres):
+def __create_beam_array(A_input, A_as, w_thres):
     """Compute a beam array out of adjacency matrix A. In a beam array each row 
     i will contain the indexes of all connected nodes for node i in sorted order  
     based on the link weight."""
     
-    n = A.shape[0]
+    n = A_input.shape[0]
     
-    A_beam = np.zeros((n,n), dtype=np.int32) - 1 
-    maxlen = 0
+    A_beam = np.zeros((n,n)) - 1 
+    maxlen = n
     for i in range(n):
         j = 0
         for k in A_as[i,:]:
-            if A[i,k] >= w_thres:
+            if A_input[i,k] >= w_thres:
                 A_beam[i,j] = k
                 j+=1
             else:
-                if j > maxlen:
+                if j < maxlen:
                     maxlen = j
                 break
-    
+                
     return A_beam[:,:maxlen]
 
 @njit
@@ -77,7 +77,7 @@ def __create_beam_array_constant_width(A, A_as, w_thres):
     n = A.shape[0]
     
     A_beam = np.zeros((n,n_beam)) - 1
-    maxlen = 0
+    maxlen = n
     for i in range(n):
         for j in range(n_beam):
             k = A_as[i,j]
@@ -85,7 +85,7 @@ def __create_beam_array_constant_width(A, A_as, w_thres):
                 A_beam[i,j] = k
                 j+=1
             else:
-                if j > maxlen:
+                if j < maxlen:
                     maxlen = j
                 break
                 
