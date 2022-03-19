@@ -2,6 +2,7 @@ import numpy as np
 import networkx as nx
 from numba import *
 from kmmi.utils.utils import sub_sum
+from kmmi.heuristics.neighborhood_search import ls_one_n_beam
 
 @njit
 def initialize_degree_vecs(A, H=None):
@@ -180,3 +181,34 @@ def init_random_fs(A, k, fss):
     idxs = np.random.choice(HC, size=k-H_fs.sum(), replace=False)
     H[idxs] = True
     return H, H_fs
+
+def initialize_solution(A, A_beam, k, init_solution, init_mode, ls_tol, beta_ratio, 
+                        find_maxima, one_in_k, verbose):
+    """Initialize
+    """
+    n = A.shape[0]
+    rsums = np.sum(A, axis=1)
+    p_w = rsums / rsums.sum()
+    if init_solution is None:
+        if init_mode == 'drop-initial':
+            H, _, _ = init_solution_drop_initial(A, k)
+        elif init_mode == 'heaviest-edge':
+            H, _ = init_solution_heaviest_edge_ranking(A, k)
+        elif init_mode == 'weighted-deg':
+            H, _ = init_solution_weighted_degree_ranking(A, k, beta_ratio=beta_ratio)
+        else:
+            H = np.zeros(n, dtype=bool)
+            idxs = np.random.choice(n, k, replace=False)
+            H[idxs] = True
+            
+        _, ao, bo = initialize_degree_vecs(A, H)
+        H_w = sub_sum(A, np.where(H)[0])
+        H, H_w, ao, bo = ls_one_n_beam(H, H_w, A, A_beam, alpha=ao, beta=bo, 
+                                         tol=ls_tol, find_maxima=find_maxima, 
+                                         one_in_k=one_in_k, verbose=verbose)    
+    else:
+        assert len(init_solution) == k
+        H_w = sub_sum(A, H)
+        H, ao, bo = initialize_degree_vecs(A, H)
+    
+    return H, H_w, ao, bo, p_w

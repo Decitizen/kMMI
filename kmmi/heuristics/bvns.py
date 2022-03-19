@@ -44,12 +44,11 @@ def BVNS(k: int, A: np.array, k_lims: tuple, k_step: int=1, timetol: int=300,
         run_trace.append((H_w, 0))
     
     else:
-        assert init_solution.shape[0] == n
-        assert init_solution.sum() == k
+        assert len(init_solution) == k
         Ho = np.zeros(n, dtype=bool)
         Ho[init_solution] = True
         Ho_w = sub_sum(A, np.where(Ho)[0])
-        _, ao, bo = initialize_degree_vecs(A, H)
+        _, ao, bo = initialize_degree_vecs(A, Ho)
     
     delta_t = process_time() - t0
     print(':: Initialization and first local search completed.')

@@ -10,42 +10,171 @@ from kmmi.heuristics.utils import __create_beam_array, __svns_score, __to_len_cl
 
 def OVNS_fs(k: int, A: np.array, fss: list, k_lims: tuple, k_step: int=1, timetol: int=300,
            ls_tol: float=0.0, ls_mode: str='best', beta_ratio: float=0.5, seed: int=None, 
-           w_quantile: float=0.01, init_mode='drop-initial', svns = False, theta: float=0.06, 
+           w_quantile: float=0.75, init_mode='drop-initial', svns = False, theta: float=0.06, 
            one_in_k=False, max_iter: int=100000, max_iter_upd: int=100000, 
            init_solution: tuple=None, verbose=False): 
-    """Variable neighborhood search heuristic for the set constrained variant of HkSP.
+    """Opportunistic Variable Neighborhood Search heuristic for the set constrained 
+    variant of HkSP. 
     
     Parameters
     ----------
-    k : value of k in HkS (number of treatment groups)
-    A : weighted adjacency matrix of the input network
-    fss : set of pre-enumerated seed node configurations
-    k_lims : range for search depth
-    k_step : defines how many search depth steps to increment at once after failing update
-    timetol : set the target time in seconds for the run
-    ls_tol : set a tolerance for update (update is approved if improvement over current 
-             best solution is at least ls_tol)
-    ls_mode : define search mode, options are `best` and `first`, first being the default
-    beta_ratio : sets the weights for the `weighted-deg` initialization strategy in range
-                 [0.0, 1.0] where 0 gives all weight to degree ranking and 1 to weighted 
-                 degree ranking.
-    seed : seed for the random number generator (note: due to lack of numba support for numpy, 
-           some numpy.random library calls don't allow seed input currently)
-    w_quantile : define the quantile of edge weights that will be explored during each local 
-                 neighorhood update iteration, lower values in increase the
-    max_iter : defines the absolute upper bound for the number of executed iterations 
-               after which the execution will be terminated (default: None)
-    max_iter_upd : define the maximum number of iterations after last successful update
-                   (default: 1e5)
-    init_solution : initial solution as a tuple of np.arrays containing the node indices, 
-                    where 1 index has the configuration of force selected seed nodes and 
-                    0 has the remaining part of the solution
+    k : int
+        Value of k in HkS (number of treatment groups).
+    A : numpy.array (symmetric)
+        Weighted adjacency matrix of the input network.
+    fss : list containing one dimensional sequences of type numpy.array
+        Set constrained graphlet sequences
+    k_lims : tuple of int
+        Range for search depth, in general bounds are (0,k) or (0,n-k) if k > 0.5*dim(A).
+    k_step : int 
+        Defines how many search depth steps to increment at once after unsuccessful update
+        (default 1).
+    timetol : int
+        Set the time upper bound (in seconds) for single run, (default 300)
+    ls_tol : float, optional
+        Set a tolerance for update (update is approved if improvement over current best 
+        solution is at least ls_tol).
+    ls_mode : string, optional
+        Set local search mode. (default 'best')
+        
+        - 'best' : best improvement mode does exhaustive search over the 
+                   space of all N1 neighbors and returns the best improvement.
+        - 'first' : first improvement begins like 'best' but returns on first 
+                    found improvement which allows faster exploration. Useful 
+                    for large networks and high k values.
+    one_in_k : bool, optional
+         If True, selects one of the k nodes in the existing solution uniformly in random
+         for replacement. Enabling allows more rapid exploration (default False).
+    init_mode : string, optional
+         Select initialization strategy ('drop-initial','heaviest-edge','random','weighted-deg')
+         (default 'drop-initial')
+         
+         - 'drop-initial' : start with all n nodes in the solution and iteratively
+                            remove the node that contributes least to the solution.  
+         - 'heaviest-edge' : selects k-x heaviest edges such that number of 
+                             nodes in the solution amount to k.
+         - 'random' : fully random initialization, selects k nodes uniformly in random.
+         - 'weighted-deg' : selects k nodes based on the linear combination 
+                            of their degree and weighted degree ranking. 
+                            'beta_ratio' adjusts the weighting.
+        See also 'init_solution'.
+    beta_ratio : float, optional
+         Sets the weights for the `weighted-deg` initialization strategy in range
+         [0,1.0] where 0 gives all weight to degree ranking and 1 to weighted 
+         degree ranking, (default 0.75).
+    init_solution : numpy.array or list, optional
+         Initial solution as a k length sequence of node ids (int) corresponding to A indeces 
+         (default None).
+    seed : int, optional
+         Seed for the random number generator (note: due to lack of numba support for numpy, 
+         some numpy.random library calls don't allow seed input currently). (default None)
+    w_quantile : float, optional
+         Define the quantile of heaviest edge weights that will be explored during each 
+         neighorhood search (also "beam width"), lower values increase exploration speed.
+         (default 1.0). See also 'auto_parametrize'.
+    svns : bool, optional
+         Enable svns mode. See also 'theta' for adjusting the search sensitivity.
+    theta : float, optional
+         Search sensitivity for svns mode. Conditional on 'svns' parameter being True.
+    max_iter : int, optional
+         Set the stopping criteria as number of max iterations (also optimization cycles)
+         (default 2e6).
+    max_iter_upd : int, optional
+         Set the convergence criteria as maximum number of iterations (also, optimization 
+         cycles) after last successful update (default 1e6).
+    verbose : bool
+         Enables verbose mode (default False).
     
     Returns
     -------
-    Ho : non-force selected solution graphlets as row indeces in the adjacency matrix
-    Ho_fs : force selected solution graphlets as row indeces in the adjacency matrix
-    Ho_w : value of the objective function for the solution
+    run_vars : dict 
+         Dict with following keys:
+         
+         - H : numpy.array, shape is (k-len(H_fs))
+             The non-set-constrained part of the HkSP solution as a k length sequence of node ids 
+             (int) corresponding to indeces in the A matrix.
+         - H_fs : numpy.array, shape is (k-len(H))
+             Part of the best found solution that includes only the set constrained nodes, format 
+             similar to H. 
+         - obj_score : float 
+             Objective function value for best solution, f(H).
+         - local_maximas_h : numpy.array with shape (x,n)
+             History of all x solution updates for the non-set-constrained part of the solution 
+            as boolean vectors of length n.
+         - local_maximas_h_fs : 
+             History of all x solution updates for the set constrained part as boolean vectors 
+             of length n.
+         - run_trace : list of tuples with length x
+             List with objective score function values (tuple index 0) and iteration index 
+             (tuple index 1) for the executed run.
+         - running_time : int
+             Running time in seconds, measured as process time (not wall time).
+         - iterations : int
+             Number of iterations (also optimization cycles).
+         - params : dict
+             Dictionary that includes all run parameters.
+         - converged : bool
+             True if run satisfied the convergence criteria set by 'max_uter_upd'.
+         
+    Examples
+    --------
+    Simple toy example with a random 1000x1000 adjacency matrix and randomly drawn
+    constrained set L.
+    
+    >>> n = 1000
+    >>> A = np.random.random((n,n))
+    >>> # Remove self-edges
+    >>> A[np.diag_indices_from(A)] = 0.0
+
+    >>> # Set OVNS params
+    >>> k = 16
+    >>> k_lims = (1,k)
+    >>> timetol = 10
+
+    >>> # Draw constrained set L (subset of V)
+    >>> n_L = 100
+    >>> L = np.random.choice(n, size=n_L, replace=False)
+    
+    >>> # Then draw random sequences (for serious use case you'd want 
+    >>> # to compute these using the 'force_selection' module)
+    >>> n_fs = 8 # Size of the set constrained part of the solution
+    >>> n_sample = 100000
+    >>> fss = [np.random.choice(L, size=n_fs, replace=False) for _ in range(n_sample)]
+    
+    >>> # Run
+    >>> run = OVNS_fs(k, A, fss, k_lims, timetol=timetol)
+    :: Initial local search completed.
+    :: LS took 0:00:06.218111, value: 69.22395116412441 
+    
+    :: Found new maxima: 70.859469, change: +2.36%
+    :: iteration: 1, distance in iterations to earlier update: 1
+    ------------------------------------------------------------------
+    :: Found new maxima ... ... ... 
+    ------------------------------------------------------------------
+    :: Found new maxima: 71.821457, change: +1.36%
+    :: iteration: 2, distance in iterations to earlier update: 1
+    ------------------------------------------------------------------
+    :: Found new maxima: 106.826962, change: +0.29%
+    :: iteration: 4641, distance in iterations to earlier update: 65
+    ------------------------------------------------------------------
+    :: Run completed @ 0:00:10.001934 (4765 iterations)
+    :: final f value: 106.826962 (6.676685 per node)
+    
+    >>> print('Selected params: ', run['params'])
+    Selected params:  {'k': 16, 'k_lims': (1, 16), 'k_step': 1, 'timetol': 10, 
+                       'ls_tol': 0.0, 'ls_mode': 'best', 'init_mode': 'drop-initial', 
+                       'beta_ratio': 0.5, 'w_quantile': 0.75, 'seed': None, 
+                       'max_iter': 100000, 'max_iter_upd': 100000, 'init_solution': None, 
+                       'theta': 0.06, 'svns': False, 'one_in_k': False}
+                       
+    >>> print('Best, non-constrained set:', run['H'])
+    Best, non-constrained set: [ 18  99 216 227 515 551 914 943]
+    
+    >>> print('Best, constrained set :', run['H_fs'])
+    Best, constrained set : [ 49  56 200 480 708 758 986 987]
+
+    >>> print('Best f value: ', run['obj_score'])
+    Best f value:  106.8269618027097
     """
     n = A.shape[0]
     assert ls_mode in ['first','best'], "Invalid local search mode; choose either " \
@@ -53,8 +182,6 @@ def OVNS_fs(k: int, A: np.array, fss: list, k_lims: tuple, k_step: int=1, timeto
     assert k != n, 'Input k value equals n, solution contains all nodes in the network'
     assert k < n, 'Input k value is greater than n; select k such that k < n'
     assert 0.0 < w_quantile <= 1.0, 'Improper value, select value from range (0.0,1.0]'
-    assert A[0:4,:].sum().round(6) == A[:,0:4].sum().round(6), 'Directed networks are ' \
-                                                               'not supported'
     if k_lims[1] > n-k:
         print(':: WARNING: upper limit {} of the k_lims is above the available pool ' \
               'of values.'.format(k_lims[1]))
@@ -66,9 +193,9 @@ def OVNS_fs(k: int, A: np.array, fss: list, k_lims: tuple, k_step: int=1, timeto
                                   'seed node configuration length'
     
     find_maxima = ls_mode == 'best'
-    w_thres = np.quantile(A[A > 0.0], 1-w_quantile)
+    w_thres = np.quantile(A[A > 0.0], 1-w_quantile) if w_quantile != 1.00 else 1e-6
     A_as = np.argsort(A)[:,::-1]
-    A_beam = __create_beam_array(A, A_as, w_thres)
+    A_beam, mu_beam_width = __create_beam_array(A, A_as, w_thres)
     assert A_beam.shape[1] > 0, 'Set w_quantile is too small, A_beam has no elements'
     if verbose and A_beam.shape[1] < 10:
         print(':: WARNING: determined beam width is narrow @ {}, optimization result ' \
@@ -170,13 +297,15 @@ def OVNS_fs(k: int, A: np.array, fss: list, k_lims: tuple, k_step: int=1, timeto
     local_maximas_h = [np.where(h)[0] for h in hss]
     local_maximas_h_fs = [np.where(h)[0] for h in hfs]
     
-    params = {'k':k,'A':A,'fss':fss,'k_lims':k_lims,'k_step':k_step,'timetol':timetol,
+    params = {'k':k,'k_lims':k_lims,'k_step':k_step,'timetol':timetol,
               'ls_tol':ls_tol,'ls_mode':ls_mode,'init_mode':init_mode,'beta_ratio':beta_ratio,
               'w_quantile':w_quantile,'seed':seed,'max_iter':max_iter,'max_iter_upd':max_iter_upd,
               'init_solution':init_solution,'theta':theta,'svns':svns,'one_in_k':one_in_k}
     
+    converged = (i0 >= max_iter_upd)
     run_vars = {'H':np.where(Ho)[0], 'H_fs':np.where(Ho_fs)[0], 'obj_score':Ho_w,
                 'local_maximas_h':local_maximas_h, 'local_maximas_h_fs':local_maximas_h_fs, 
-                'run_trace':run_trace, 'running_time':delta_t, 'iterations':i, 'params':params}
+                'run_trace':run_trace, 'running_time':delta_t, 'iterations':i, 'params':params,
+                'converged':converged}
     
     return run_vars
