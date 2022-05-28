@@ -34,14 +34,29 @@ def __replace_in_hhfs(Ho, Ho_fs, fss, n_ss, k, n, p, verbose=False):
     """Replace p nodes in both Ho and Ho_fs with uniformly drawn sample from the 
     complement of Ho & Ho_fs."""
     H = np.zeros(n, dtype=bool)
+    p_t = p
+    r_count = 0
     while True:
+        if r_count > 5:
+            # Restart in pathological cases
+            p_t = min(n_ss.keys())
+            rounds = 0
         H_fs = np.zeros(n, dtype=bool)
-        idxs = fss[__sample_up_to_class_p(p, n_ss)]
+        idxs = fss[__sample_up_to_class_p(p_t, n_ss)]
         H_fs[idxs] = True
         pp = len(idxs) - (H_fs & (Ho | Ho_fs)).sum()
-        if p - pp + len(idxs) <= k:
+        if verbose: print('Deterministic update -- ', p_t - pp + len(idxs), p_t, \
+                          ' --> size of new fs:', len(idxs))
+        if p_t - pp + len(idxs) <= k:
+            if verbose: print('Breaking out -- ', p_t - pp + len(idxs), p_t)
             break
+        else:
+            r_count += 1
+            p_upd = p + np.random.randint(0, r_count)
+            p_t = p_upd if p_upd <= k else p 
+            if verbose: print('Random -- ', p_t)
             
+    p = p_t 
     if verbose: print(f':: Picked new fs node configuration of length {len(idxs)}')
     if verbose: print(f':: Number of unique new nodes {pp}')
     p_diff = p - pp
@@ -105,7 +120,7 @@ def shake(A: np.array, Ho: np.array, k: int, p: int, alpha: np.array, beta: np.a
     return H, H_w, alpha_p, beta_p
 
 def shake_fs(A: np.array, Ho: np.array, Ho_fs: np.array, fss: list, n_ss: dict, k: int, 
-             p: int, alpha: np.array, beta: np.array, verbose=False):
+             p: int, p_max, alpha: np.array, beta: np.array, verbose=False):
     """Implements the perturbation routine for the VNS when forced selection is used.
     
         Method has two different behaviors that are dependent on the p value and H_fs size:
@@ -119,9 +134,16 @@ def shake_fs(A: np.array, Ho: np.array, Ho_fs: np.array, fss: list, n_ss: dict, 
     c_max = max(n_ss.keys())
     
     if p < c_min and p > Ho.sum():
-        p = np.random.randint(c_min, c_max)
-    if p >= min(n_ss.keys()):
-        H, H_fs, xis, xjs = __replace_in_hhfs(Ho, Ho_fs, fss, n_ss, k, n, p, verbose)
+        p = np.random.randint(c_min, np.min([c_max, p_max]))
+    if p >= c_min:
+        repeat_count = 0
+        while True: 
+            H, H_fs, xis, xjs = __replace_in_hhfs(Ho, Ho_fs, fss, n_ss, k, n, p, verbose)
+            if (H_fs & Ho_fs).sum() != Ho_fs.sum():
+                break
+            repeat_count+=1
+            assert repeat_count < 5, 'Limited number of choices in the fixed set ' \
+                                     ' configurations, try generating more.'
     else:
         H, H_fs, xis, xjs = __replace_in_h(Ho, Ho_fs, p)
     
@@ -136,4 +158,5 @@ def shake_fs(A: np.array, Ho: np.array, Ho_fs: np.array, fss: list, n_ss: dict, 
     assert Hfs_len == k, f'H combined size {Hfs_len} does not match with k={k}'
     assert (H & H_fs).sum() == 0, 'There is overlap in the selection\n * : ' \
                                           '{}'.format(set(H_fs) & set(H))
-    return H, H_fs, alpha_p, beta_p
+    H_w = alpha_p[H | H_fs].sum() / 2
+    return H, H_w, H_fs, alpha_p, beta_p
