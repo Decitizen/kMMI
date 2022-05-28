@@ -142,9 +142,10 @@ def OVNS(k: int, A: np.array, k_lims: tuple, k_step: int=1, timetol: int=300, ls
          speed of 1e4 optimization cycles per minute: (ls_mode, one_in_k, w_quantile, k_step), 
          (default True).
          
-         Note! These parameter selections are based on early hyperparameter optimization runs.
-         However, they might not generalise to your use case. For best results, it is advisable
-         to run proper hyperparamater optimization for your particular data set.
+         Note! the auto_parametrize selection heuristic is based on early hyperparameter 
+         optimization runs. However, they might not generalise to your use case. For best 
+         results, it is advisable to run proper hyperparamater optimization for your 
+         particular data set.
     verbose : bool
          Enables verbose mode (default False).
     
@@ -289,7 +290,7 @@ def OVNS(k: int, A: np.array, k_lims: tuple, k_step: int=1, timetol: int=300, ls
                       'earlier update: {}\n{}'.format(i, i0, 50*'--'))
                 i0 = 0
                 Ho_w = H_w
-                Ho = H
+                Ho = H.copy()
                 ao = ap.copy()
                 bo = bp.copy()
                 hss.append(Ho)

@@ -7,12 +7,13 @@ from kmmi.heuristics.initialize import *
 from kmmi.heuristics.neighborhood_change import *
 from kmmi.heuristics.neighborhood_search import *
 from kmmi.heuristics.utils import __create_beam_array, __svns_score, __to_len_classes
+from collections import Counter
 
 def OVNS_fs(k: int, A: np.array, fss: list, k_lims: tuple, k_step: int=1, timetol: int=300,
            ls_tol: float=0.0, ls_mode: str='best', beta_ratio: float=0.5, seed: int=None, 
-           w_quantile: float=0.75, init_mode='drop-initial', svns = False, theta: float=0.06, 
+           w_quantile: float=0.75, init_mode='drop-initial', svns_offset=1e5, theta: float=1e-4, 
            one_in_k=False, max_iter: int=100000, max_iter_upd: int=100000, 
-           init_solution: tuple=None, verbose=False): 
+           init_solution: tuple=None, verbose=False, ss = None):
     """Opportunistic Variable Neighborhood Search heuristic for the set constrained 
     variant of HkSP. 
     
@@ -177,6 +178,7 @@ def OVNS_fs(k: int, A: np.array, fss: list, k_lims: tuple, k_step: int=1, timeto
     Best f value:  106.8269618027097
     """
     n = A.shape[0]
+    CONTENT_END_FLAG = -1
     assert ls_mode in ['first','best'], "Invalid local search mode; choose either " \
                                         " 'first' or 'best'" 
     assert k != n, 'Input k value equals n, solution contains all nodes in the network'
@@ -217,13 +219,10 @@ def OVNS_fs(k: int, A: np.array, fss: list, k_lims: tuple, k_step: int=1, timeto
         else:
             H, Ho_fs = init_random_fs(A, k, fss)
         _, ao, bo = initialize_degree_vecs(A, H | Ho_fs)
-        H_w = sub_sum(A, np.where(H | Ho_fs)[0])
+        H_w = ao[H | H_fs].sum() / 2
         Ho, Ho_w, ao, bo = ls_one_n_beam_fs(H, Ho_fs, H_w, A, A_beam, ao, bo, 
                                             tol=ls_tol, find_maxima=find_maxima,
-                                            one_in_k=one_in_k, verbose=verbose)
-        hss.append(Ho)
-        hfs.append(Ho_fs)
-        run_trace.append((H_w, 0))      
+                                            one_in_k=one_in_k, verbose=verbose)    
     else:
         Ho = np.zeros(n, dtype=bool)
         Ho_fs = np.zeros(n, dtype=bool)
@@ -231,30 +230,43 @@ def OVNS_fs(k: int, A: np.array, fss: list, k_lims: tuple, k_step: int=1, timeto
         Ho_fs[init_solution[1]] = True
         assert (Ho | Ho_fs).sum() == k
         assert (Ho & Ho_fs).sum() == 0
-        Hu = np.where(Ho | Ho_fs)[0]
-        H_w = Ho_w = sub_sum(A, Hu)
-
+        _, ao, bo = initialize_degree_vecs(A, Ho | Ho_fs)
+        H_w = Ho_w = ao[Ho | Ho_fs].sum() / 2
+        
+    hss.append(Ho)
+    hfs.append(Ho_fs)
+    run_trace.append((H_w, 0))   
+        
     delta_t = process_time()-t0
     print(':: Initial local search completed.')
+    print(':: SVNS update offset: {} iterations'.format(svns_offset))
     print(':: LS took {}, value: {}\n'.format(str(td(seconds=delta_t)), Ho_w))
+    hfs_cond = lambda H_fs, Ho_fs: (H_fs & Ho_fs).sum() != Ho_fs.sum()
     
-    i = i0 = 0
+    i = i0 = ifs = 0
     stop = False
+    n_overlap = 0
+    ccc = Counter()
+    n_overlaps = []
     while not stop:
         k_cur = k_lims[0]
         while k_cur <= k_lims[1] and not stop:
             
             # 1. Perturbate    
             if k_cur > 0:
-                H, H_fs, ap, bp = shake_fs(A, Ho, Ho_fs, fss, n_ss, k, k_cur, ao, bo)
+                H, H_w, H_fs, ap, bp = shake_fs(A, Ho, Ho_fs, fss, n_ss, k, k_cur, k_lims[1], ao, bo)
+                # Check if hfs has been visited
+                if hfs_cond(H_fs, Ho_fs):
+                    hfs_id = hash(frozenset(np.where(H_fs)[0]))
+                    ccc.update([hfs_id])
+                    
                 if verbose: print(':: Perturbation @ depth ', k_cur)
             else:
                 H, H_fs, H_w = Ho.copy(), Ho_fs.copy(), Ho_w
                 ap, bp = ao.copy(), bo.copy()
                 
             # 2. Find local improvement
-            H_w = sub_sum(A, np.where(H | H_fs)[0])
-            H, H_w, ap, bp = ls_one_n_beam_fs(H, H_fs, H_w, A, A_beam, ap, bp, 
+            H, H_w, ap, bp = ls_one_n_beam_fs(H, H_fs, H_w, A, A_beam, alpha=ap, beta=bp, 
                                               tol=ls_tol, find_maxima=find_maxima,
                                               one_in_k=one_in_k, verbose=verbose)
             if verbose and find_maxima:
@@ -262,18 +274,46 @@ def OVNS_fs(k: int, A: np.array, fss: list, k_lims: tuple, k_step: int=1, timeto
                     print(':: Local maxima:', H_w, '\n')
             i += 1
             i0 += 1
+            ifs += 1
+            
+            if ifs > svns_offset and n_overlap > 0 and len(n_overlaps) > 5:
+                mean_nol = np.mean([np.abs(x - n_overlap) for x in n_overlaps[-5:]])
+                if mean_nol < 2:
+                    svns = True
+                    n_overlaps.clear()
+                    k_cur = max(n_ss.keys()) if max(n_ss.keys()) < k_lims[1] else k_lims[1]
+                    Ho_w = np.max([hw for hw,i in run_trace])
+                    print(f':: Due to overlap and  SVNS update condition enabled with θ: {theta:.4f}')
+                else:
+                    svns = False
+            else:
+                svns = False
+
             svns_cond = __svns_score(H_w, Ho_w,
                                      H | H_fs, Ho | Ho_fs,
                                      k) > 1 + theta if svns else False
             if H_w > Ho_w or svns_cond:
-                delta_w = (H_w-Ho_w) / Ho_w * 100 
-                print(':: Found new maxima: {:.6f}, change: +{:.2f}%'.format(H_w, delta_w))
+                delta_w = (H_w-Ho_w) / Ho_w * 100
+                print(':: Found new maxima: {:.6f}, change: +{:.4f}%'.format(H_w, delta_w))
                 print(':: iteration: {}, distance in iterations to ' \
-                      'earlier update: {}\n{}'.format(i, i0, 50*'--'))
+                      'last update: {}, to last L update: {}'.format(i, i0, ifs))
+                if hfs_cond(H_fs, Ho_fs):
+                    ifs = 0
+                if ss is not None:
+                    H_nodes = [v for s in np.where(H)[0] for v in ss[s]]
+                    Hfs_nodes = [v for s in np.where(H_fs)[0] for v in ss[s]]
+                    overlap_counter = Counter(H_nodes + Hfs_nodes)
+                    if CONTENT_END_FLAG in overlap_counter:
+                        overlap_counter.pop(CONTENT_END_FLAG)
+                    n_overlap = len([c for c in overlap_counter.values() if c > 1])
+                    n_overlaps.append(n_overlap)
+                    if n_overlap > 0:
+                        print(f':: Warning, update with {n_overlap} overlaps accepted.')
+                print(50*'--')
                 i0 = 0
                 Ho_w = H_w
-                Ho = H
-                Ho_fs = H_fs
+                Ho = H.copy()
+                Ho_fs = H_fs.copy()
                 ao = ap.copy()
                 bo = bp.copy()
                 k_cur = k_lims[0]
@@ -283,16 +323,15 @@ def OVNS_fs(k: int, A: np.array, fss: list, k_lims: tuple, k_step: int=1, timeto
             else:
                 k_cur += k_step
             stop = (i >= max_iter or i0 >= max_iter_upd or process_time() - t0 >= timetol)
-                
+    
+    max_idx = np.argmax([hw for hw,i in run_trace])
+    Ho_w = run_trace[max_idx][0]
+    Ho = hss[max_idx]
+    Ho_fs = hfs[max_idx]
+    
     delta_t = process_time()-t0
     print(':: Run completed @ {} ({} iterations), final f value: {:.6f} ({:.6f} per node)'
           .format(str(td(seconds=delta_t)), i, Ho_w, Ho_w / k))
-    
-    if svns:
-        max_idx = np.argmax([hw for hw,i in run_trace])
-        Ho_w = run_trace[max_idx][0]
-        Ho = hss[max_idx]
-        Ho_fs = hfs[max_idx]
     
     local_maximas_h = [np.where(h)[0] for h in hss]
     local_maximas_h_fs = [np.where(h)[0] for h in hfs]
@@ -306,6 +345,6 @@ def OVNS_fs(k: int, A: np.array, fss: list, k_lims: tuple, k_step: int=1, timeto
     run_vars = {'H':np.where(Ho)[0], 'H_fs':np.where(Ho_fs)[0], 'obj_score':Ho_w,
                 'local_maximas_h':local_maximas_h, 'local_maximas_h_fs':local_maximas_h_fs, 
                 'run_trace':run_trace, 'running_time':delta_t, 'iterations':i, 'params':params,
-                'converged':converged}
+                'converged':converged, 'fs_counter':ccc}
     
     return run_vars
