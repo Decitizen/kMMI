@@ -210,5 +210,6 @@ def initialize_solution(A, A_beam, k, init_solution, init_mode, ls_tol, beta_rat
         assert len(init_solution) == k
         H_w = sub_sum(A, H)
         H, ao, bo = initialize_degree_vecs(A, H)
+        H_w = ao[H].sum() / 2
     
     return H, H_w, ao, bo, p_w
