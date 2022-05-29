@@ -112,8 +112,13 @@ def init_solution_drop_initial(A, k):
 def init_solution_drop_initial_fs(A, k, fss=None):
     """Construct initial solution H using the drop initial initialization scheme;
     start with V = H and iteratively remove node that contributes least to the 
-    sum A_ij for i,j in H, until k nodes are left in H.
+    sum A_ij for i,j in H, until k nodes are left in H. Then we find the fs sequence
+    H_fs such that the intersection of H_fs and H is maximum, i.e. argmax|H \cap H_fs|.
+    If H_fs is contained completely within H, we return H, else we modify H such that
+    rest of the graphlets s \in H_fs \setminus H will become included into H.
     """
+    
+    # 1. Get initial H using the standard drop initialization
     H, alpha, beta = init_solution_drop_initial(A, k)
     n = A.shape[0]
     n_fs = len(fss)
@@ -121,6 +126,7 @@ def init_solution_drop_initial_fs(A, k, fss=None):
     max_ol = 0
     max_idx = -1
     max_fsi = None
+    # 2. Find fs sequence with max overlap (largest intersection) with H
     for i in range(n_fs):
         fsi = np.zeros(n, dtype=bool)
         fsi[fss[i]] = True 
@@ -131,12 +137,18 @@ def init_solution_drop_initial_fs(A, k, fss=None):
             max_idx = i
             max_fsi = fsi_ol
     
+    # 3. If H_fs is corresponding to max_idx is not completely contained within H
     if len(set(fss[max_idx]) - set(np.where(H)[0])) != 0:
         H_fs = np.zeros(n, dtype=bool)
+        
+        # 3a. for overlapping cases modify H by removing the overlapping part
         if max_ol != 0:
             H_p = np.array(list(set(fss[max_idx])-
                            set(np.where(H)[0])))
             H[max_fsi] = False
+            
+        # 3b. for non-overlapping cases, go over the fs and select H_fs such that
+        # its union is maximized (instead of intersection)
         else:
             max_w = 0
             for i in range(n_fs):
@@ -152,18 +164,25 @@ def init_solution_drop_initial_fs(A, k, fss=None):
 
         H_fs[fss[max_idx]] = True
 
+        # 4. Iterate through all nodes in H_fs \setminus H
         for xj in H_p:
             HC = H.copy()
             HC[H_fs] = False
-            idx = np.argsort(alpha[HC])[0]
+            
+            # Get node xi from H \setminus H_fs that least contributes to H 
+            idx = np.argsort(alpha[HC])[0] 
             xi = np.where(HC)[0][idx]
+            
+            # Remove node xi from H, add xj instead
             H[xi] = False
             for y in range(n):
                 if y != xj:
                     alpha[y] = alpha[y] - A[y,xi] + A[y,xj]
                     beta[y] = beta[y] + A[y,xi] - A[y,xj]
     else:
+        # If fully contained
         H_fs = max_fsi
+        H[H_fs] = False
     return H, H_fs, alpha, beta
 
 def init_random_fs(A, k, fss):
