@@ -1,2 +1,7 @@
 *.ipynb*
 *__pycache__*
+
+archive/*
+run_*
+tempvars/*
+pymnet/*
