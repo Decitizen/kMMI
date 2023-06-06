@@ -8,149 +8,144 @@ from kmmi.exposure import *
 from ovns.ovns import *
 from kmmi.pruning import *
 
-#FIXME: update to use the refactored code
-def run(G: nx.DiGraph, 
-        Vs: list, 
-        pos: dict, 
-        k: int, 
-        f: float=0.85, 
-        k_min: int=3, 
-        k_max: int=4,
-        delta_min: float=0.5, 
-        delta_max: float=1.0, 
-        w_threshold: float=1e-4, 
-        expected: list=[],
-        force_select: list=[],
-        penalty_weight: float=4.0,
-        weight_attr: str='weight',
-        timetol: int=600,
-        beta_ratio: float=0.25,
-        ls_mode: str='first',
-        w_quantile: float=0.99,
-        seed: int= 2222,
-        pre_enumerate_timetol: int=20,
-        nbtw=False,
-        remove_small_seeds=False,
-        visualize=False,
-        verbose=False
-        ):
-    
-    """Executes single run of kmmi algorithm.
-    
+import time
+from datetime import timedelta
+
+def kMMI(G, k, f=0.2, f_vs=None, Vs=None, n_sel=8000, n_min=1000, k_min=3, k_max=4,
+         ptol=0.01, max_iter=2e5, max_iter_upd=1e5, nbtw=True, timetol=600,
+         seed=4444):
+    """
+    Executes single run of kmmi algorithm.
+
+    Parameters:
+    G (NetworkX graph): Input graph.
+    k (int): k parameter for the kMMI algorithm.
+    f (float): Fraction of exposure m (default: 0.2).
+    Vs (list, optional): List of nodes. If not provided, all nodes of the graph are used.
+    n_sel (int, optional): Maximum number of subgraphs to select. Default is 8000.
+    n_min (int, optional): Minimum number of subgraphs required. Default is 1000.
+    k_min (int, optional): Lower bound for graphlet size. Default is 3.
+    k_max (int, optional): Upper bound for graphlet size. Default is 4.
+    ptol: tolerance parameter for the n_ranked selection
+    max_iter (int): Maximum (total) number of iterations for the OVNS
+                    algorithm (stopping criteria).
+    max_iter_upd (int): Maximum number of iterations after last successful update
+                        of the OVNS algorithm (stopping criteria).
+    nbtw (bool): determines if non-backtracking mode for the Katz transformation
+                 is used. (default: True)
+    timetol (int, optional): Time tolerance. Default is 600.
+    seed (int, optional): Seed for the random number generator. Default is 4444.
+
     Returns:
-    GVs (nx.Graph): final graph
-    E_directed (np.array): coarse grained exposure (adjacency) matrix  
-    [fs, ds, es]: solution overlaps
-    """ 
-    assert len(set(force_select)) == len(force_select), 'Remove duplicates from the force selection nodes.'
-    
-    if verbose: 
-        print(50*'==')
-        print("KMMI INITIALIZED\n")
-        if nbtw: print(':: Non-backtracking running mode enabled.')
-        if len(force_select) > 0: print(':: Forced selection running mode enabled.')
-        print(':: Pre-process by max-normalizing input network weights')
-    
-    if weight_attr != 'weight':
-        values = dict(zip(G.edges, [G.edges[e][weight_attr] for e in G.edges]))
-        nx.set_edge_attributes(G, values, 'weight')
-    
-    # Max-normalize weights in the underlying graph
-    w_max = max(G.edges(data='weight'), key=lambda x: x[2])
-    for e in G.edges:
-        G.edges[e]['weight'] /= w_max[2]
-        
-    ##  1. Graphlet generation
-    if verbose: 
-        print(50*'==')
-        print("PHASE 1/5: GENERATE GRAPHLETS\n")
-        print(':: Enumerating all connected graphlets')
-        
-    #### 1.1. Generate graphlets       
-    Vs_hat = generate_candidate_subgraphs_esu(G, Vs, k_min=k_min, k_max=k_max)
-    if verbose: print(':: Total number of graphlets generated: {}'.format(len(Vs_hat)))   
-    Vs_hat_augmented = prune(G, Vs_hat=Vs_hat, 
-                             delta_min=delta_min, 
-                             delta_max=delta_max,
-                             k_min=k_min, k_max=k_max,
-                             force_select=force_select, 
-                             remove_small_seeds=remove_small_seeds, verbose=verbose)
+    tuple: Contains results of the OVNS algorithm.
+    """
 
-    n_eff = len(set([v for s in Vs_hat_augmented for v in s]))
-    print(':: Number of unique g-nodes after pruning: ', n_eff)
-                    
-    ##  2. Compute exposure matrix
-    if verbose: print(50*'==')
-    if verbose: print("PHASE 2/5: COMPUTE EXPOSURE MATRIX\n")
-    E_directed = to_exposure_matrix(G, f, w_threshold = w_threshold, 
-                                    nbtw=True, verbose=verbose)
-       
-    ##  3. Coarse grain
-    if verbose: 
-        print(50*'==')
-        print("PHASE 3/5: COARSE GRAIN EXPOSURE MATRIX\n")
-        print(':: Coarse graining exposure matrix (penalty weight: {})'.format(penalty_weight))
+    print(50*'==')
+    print(":: PHASE 1/5: INITIALIZE GRAPH AND PARAMETERS\n")
 
-    U = to_numpy_array(Vs_hat_augmented)
-    E_hat = coarse_grain_exposure_matrix(U, E_directed, 
-                                         use_mutual_exposure=True, 
-                                         penalty_weight=penalty_weight)
+    if Vs is None:
+        Vs = list(G.nodes)
 
-    ##  4. Find near-optimal solution to HkS
-    if verbose: 
-        print(50*'==')
-        print("PHASE 4/5: TRANSFORM INPUT AND SOLVE WITH OVNS\n")
-        print(':: Transforming to HkS input format (edgelist)')
-    
-    ## 4.1 Transform to HkS input
-    GVs = transform_to_hks_input(E_hat)
-    if visualize:
-        ws = compute_ghat_penalty_weight_distribution(GVs, Vs_hat_augmented)
-        fig, ax = plt.subplots(1,1, figsize=(6,4))
-        ax.hist(ws)
-        ax.set_xlim(0,1.0)
-        ax.set_title('Penalty weight distribution after coarse graining and input transformation')
-        
-    if not nx.is_connected(GVs.to_undirected()): print('WARNING: network is not connected.')
-    
-    if visualize:
-        fig, axes = plt.subplots(1,3,figsize=(24,8))
-        axes = axes.ravel()
-        if force_select:
-            visualize_ghat_dummy_nodes(GVs, node_map, ax=axes[0], u_prime_map=u_prime_map)
-    
-    if verbose: 
-        print(':: Computing heaviest {}-subgraph with {} pre-selected nodes\n'.format(k, 
-                                                                                      len(force_select)))
-    
-    ## 4.1 Pre-enumerate force selected node configurations
-    n = len(GVs)
-    Ec, ol_fs_ids, fs_ids, fs_ids_rev = to_dependency_network(Vs_hat_augmented, force_select)
-    Gec = nx.Graph(Ec)
-    Gec_sub = nx.subgraph(Gec, fs_ids.keys())
-    ss = sample_independent_sets(Gec_sub, force_select, fs_ids, fs_ids_rev, 
-                                 target_time=pre_enumerate_timetol, 
-                                 verbose=verbose)
-    
-    ##  4.2 Run OVNS
-    ss = [list(s) for s in ss]
+    if n_min < k:
+        n_min = 2*k
+
+    rng = np.random.default_rng(seed=seed)
+    N = len(G)
+    A = nx.to_numpy_array(G)
+    print(':: Initializing graph... Average degree: Vs{:.2f}, Number of seed nodes: {}'.format(2*len(G.edges) / len(G), len(Vs)))
+
+    #### 2. Generate graphlet candidates
+
+    print(50*'==')
+    print(":: PHASE 2/5: GENERATE GRAPHLET CANDIDATES\n")
+
+    t0 = time.time()
+    U = generate_candidate_subgraphs_esu(G, Vs, k_min, k_max)
+    t1 = time.time()
+    delta_s = t1 - t0
+    delta_td = timedelta(seconds=delta_s)
+    U = to_numpy_array(U)
+    print(':: Enumerating all connected graphlets...')
+    print('* Number of graphlets generated:', U.shape[0])
+    print(":: Elapsed time:", str(delta_td))
+    node_counts(Vs, A, U)
+
+    #### Handle case where not enough graphlets are generated
+    if len(U) < n_min:
+        for i in range(1,3):
+            k_max += 1
+            print(':: Not enough graphlets, k_max is too restricted, relax by 1')
+            print(f'k_max set to {k_max}')
+
+            U = generate_candidate_subgraphs_esu(G, Vs, k_min, k_max)
+            U = to_numpy_array(U)
+            if len(U) >= n_min:
+                break
+
+        node_counts(Vs, A, U)
+        if len(U) < n_min:
+            raise Exception('Not enough graphlets generated even after relaxing k_max')
+
+    #### 3. Prune if necessary
+    print(50*'==')
+    print(":: PHASE 3/5: PRUNE GRAPHLETS IF NECESSARY\n")
+
+    Uc = U
+    if Uc.shape[0] >= n_sel:
+        if Uc.shape[0] > n_sel:
+            print(':: Pruning subgraphs...')
+            Uc_sp = prune_subgraphs(Uc, k_min, k_max)
+            node_counts(Vs, A, Uc_sp)
+            Uc = Uc_sp if Uc_sp.shape[0] > n_min else Uc
+
+        if Uc.shape[0] > n_sel:
+            print(f':: Executing N_ranked selection, with n_sel={n_sel}')
+            ws, ds = graphlet_scores(Uc, A)
+            idxs = np.argsort(ws)[::-1]
+            p_min, p_max = 5, 10
+            Vs_uc = unique_nodes(Uc, A.shape[0])
+            while True:
+                Uc_nrank, _, C, _ = select_nrank(Uc[idxs,:], A, Vs_uc, p_min, p_max, ptol, n_iters=1,
+                                           presorted=True, verbose=True, adaptive_p=True)
+                if Uc_nrank.shape[0] >= n_min:
+                    Uc = Uc_nrank
+                    node_counts(Vs, A, Uc)
+                    break
+                p_min -= 1
+
+    print(':: Selection ready')
+    node_counts(Vs, A, Uc)
+    Vs_uc = unique_nodes(Uc, A.shape[0])
+    #### 4. Exposure matrix transformation
+
+    print(50*'==')
+    print(":: PHASE 4/5: EXPOSURE MATRIX TRANSFORMATION\n")
+
+    E = to_exposure_matrix(G, f, verbose=True)
+    E_hat, Ew, En_hat = coarse_grain_exposure_matrix_w(Uc, E, use_mutual_exposure=True)
+
+    # ### 5. Transform to HkSP and solve
+    print(50*'==')
+    print(":: PHASE 5/5: TRANSFORM TO HkSP AND SOLVE\n")
+
+    n = Uc.shape[0]
     k_lims = (1, np.min([k, n-k]))
-    k_step = 1
-    A = nx.to_numpy_array(GVs)
-    H_opt, H_opt_fs, H_opt_w = OVNSfs(k, A, ss, 
-                                      k_lims, k_step, 
-                                      timetol, 0.0, 
-                                      ls_mode, beta_ratio, 
-                                      seed, w_quantile, 
-                                      verbose=False)
-    
-    if verbose: print(':: k={}, W^(H)={:.3f}, H_opt={}, H_opt_fs={}'.format(k, 
-                                                                             H_opt_w, 
-                                                                             H_opt, 
-                                                                             H_opt_fs))
-    
-    H_opt_mapped = [Vs_hat_augmented[s] for s in H_opt]
-    H_opt_fs_mapped = [Vs_hat_augmented[s] for s in H_opt_fs]
-    
-    return H_opt_mapped, H_opt_fs_mapped, H_opt_w
+    k_step = k // 10
+    use_pref_attachment = True
+    verbose = False
 
+    E_input = transform_to_hks_input(E_hat)
+    results = OVNS(k=k,
+                   A=E_input,
+                   k_lims=k_lims,
+                   k_step=k_step,
+                   timetol=timetol,
+                   use_pref_attachment=use_pref_attachment,
+                   max_iter=max_iter,
+                   max_iter_upd=max_iter_upd,
+                   verbose=verbose,
+                   seed=seed
+                   )
+
+    print(':: kMMI Algorithm run complete.')
+    return results, E, k, E_hat, Ew, En_hat, Uc, Vs_uc
