@@ -6,4 +6,4 @@ This repository contains the code base for our implementation of kMMI (k-Mutual 
 * numpy
 * networkx
 * [ovns](https://github.com/decitizen/OVNS)
-* pymnet
+* igraph
