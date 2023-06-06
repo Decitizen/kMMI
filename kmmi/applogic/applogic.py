@@ -5,7 +5,7 @@ from numba import *
 from kmmi.constraints import *
 from kmmi.enumeration import *
 from kmmi.exposure import *
-from kmmi.heuristics import *
+from ovns.ovns import *
 from kmmi.pruning import *
 
 #FIXME: update to use the refactored code

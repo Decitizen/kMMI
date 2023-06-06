@@ -19,9 +19,6 @@ from kmmi.exposure import *
 from kmmi import constraints
 from kmmi.constraints import *
 
-from kmmi import heuristics
-from kmmi.heuristics import *
-
 from kmmi import applogic
 from kmmi.applogic import *
 
