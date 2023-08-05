@@ -6,4 +6,5 @@ This repository contains the code base for our implementation of kMMI (k-Mutual 
 * numpy
 * networkx
 * [ovns](https://github.com/decitizen/OVNS)
-* igraph
+* igraph (for subgraph enumeration)
+* leidenalg (for community detection)
